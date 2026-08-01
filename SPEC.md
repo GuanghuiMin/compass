@@ -354,9 +354,13 @@ END_GRAPH
 ```
 
 The parser normalizes, and records every instance of, exactly this list: one matched pair of markdown
-fences around the whole answer, indentation, blank lines, field order, capitalization of structural
-keywords and field names, spacing around the `:` of a field, spacing around the `=` of an `entry` or
-`argument`, quotes around scalars, and trailing whitespace.
+fences around the whole answer, indentation, blank lines, capitalization of structural keywords and
+field names, spacing around the `:` of a field, spacing around the `=` of an `entry` or `argument`,
+quotes around scalars, and trailing whitespace.
+
+Fields within a block may appear in any order. Field order is part of the grammar rather than a
+deviation from it, and is not recorded: counting it would turn a harmless choice into a statistic about
+how badly the model formats its answers.
 
 The parser repairs nothing else. Not a missing node, not a missing edge, not a dangling reference, not a
 wrong endpoint type, not an unavailable information node without a producer, and never a decision about

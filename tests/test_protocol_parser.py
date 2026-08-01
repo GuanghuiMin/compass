@@ -201,10 +201,23 @@ def test_field_name_case_is_tolerated_and_logged():
     assert any("field name case" in n for n in outcome.normalizations)
 
 
-def test_field_order_does_not_matter():
-    text = WHOLE.replace("kind: runtime_reference\navailable: false\n",
-                         "available: false\nkind: runtime_reference\n")
-    assert parse(text).ok
+def test_field_order_does_not_matter_and_is_not_logged():
+    """Order is part of the grammar, so writing it differently is not a deviation to count."""
+    text = WHOLE.replace("kind: result\navailable: false\n",
+                         "available: false\nkind: result\n")
+    outcome = parse(text)
+    assert outcome.ok
+    assert not any("order" in n for n in outcome.normalizations)
+
+
+def test_ids_that_read_as_the_same_number_serialize_in_one_order():
+    a = build(nodes=[ComputationNode(id="c1", description="first"),
+                     ComputationNode(id="c01", description="second")])
+    b = StateGraph()
+    b.add(ComputationNode(id="c01", description="second"))
+    b.add(ComputationNode(id="c1", description="first"))
+    assert to_protocol(a) == to_protocol(b)
+    assert parse(to_protocol(a)).graph == a
 
 
 def test_optional_quotes_are_tolerated_and_logged():

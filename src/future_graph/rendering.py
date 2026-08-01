@@ -4,9 +4,9 @@ No history section, no corrections, no raw trajectory, no status words, no inven
 sitting apart from the work that needs it. Information appears under the computations that consume it,
 because that is the only reason it is here.
 
-Information consumed by several computations is written out once, under the first consumer in the
-rendered order, and referred to by id under the others. Nothing is referred to before it has been
-defined, so the text can be read top to bottom.
+Information is written out once, at its first structural mention in rendered order: under its future
+producer when it has one, otherwise under its first consumer. Every later mention is the id alone, so
+the text reads top to bottom with nothing referred to before it has been defined.
 
 A rendered scalar keeps the type the graph holds: `7` and `"7"` are different states and must not read
 the same. The protocol's canonical form is reused rather than reimplemented, so the two cannot drift.

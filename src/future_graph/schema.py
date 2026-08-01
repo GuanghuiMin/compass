@@ -119,7 +119,10 @@ def _check_id(value: object, prefix: str, where: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SchemaError(f"{where}: id must be non-empty text")
     ident = value.strip()
-    if not ident.startswith(prefix) or not ident[len(prefix):].isdigit():
+    suffix = ident[len(prefix):]
+    # ASCII decimals only: str.isdigit() also accepts '²' and friends, which int() will not read,
+    # so an id could pass here and then break the sort that orders a serialized graph.
+    if not ident.startswith(prefix) or not suffix or not suffix.isascii() or not suffix.isdigit():
         raise SchemaError(f"{where}: id {ident!r} must be {prefix}<number>, local to this snapshot")
     return ident
 

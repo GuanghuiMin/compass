@@ -46,6 +46,25 @@ def test_ids_are_snapshot_local_and_shaped():
         info(iid="c1")
 
 
+@pytest.mark.parametrize("bad", ["c²", "c١", "c", "c1a", "cⅣ", "c1.0", "c-1"])
+def test_an_id_whose_number_is_not_ascii_decimal_is_rejected(bad):
+    """str.isdigit() accepts '²', which int() will not read, and the sort would then raise."""
+    with pytest.raises(SchemaError, match="c<number>"):
+        comp(cid=bad)
+
+
+def test_ids_that_read_as_the_same_number_still_sort_deterministically():
+    """c1 and c01 are both legal and both read as one; order must not come from insertion."""
+    a = StateGraph()
+    a.add(comp("c1", description="first written"))
+    a.add(comp("c01", description="second written"))
+    b = StateGraph()
+    b.add(comp("c01", description="second written"))
+    b.add(comp("c1", description="first written"))
+    assert a.to_snapshot() == b.to_snapshot()
+    assert [c.id for c in a.computations] == [c.id for c in b.computations]
+
+
 def test_an_unknown_information_kind_is_rejected():
     with pytest.raises(SchemaError, match="not a known information kind"):
         InformationNode(id="i1", kind="contract", description="d", available=True)

@@ -176,18 +176,23 @@ class StateGraph:
         return iter(self._g.nodes)
 
 
-def _order(node_id: str) -> tuple[str, int]:
-    """Sort c2 before c10, and keep computations and information apart."""
-    return node_id[0], int(node_id[1:])
+def _order(node_id: str) -> tuple[str, int, str]:
+    """Sort c2 before c10, keep computations and information apart, and never leave a tie.
+
+    The raw id breaks ties because c1 and c01 are both legal and both read as one; without it their
+    order would come from whichever was inserted first, and a serialization that depends on
+    insertion order is not canonical.
+    """
+    return node_id[0], int(node_id[1:]), node_id
 
 
-def _safe_order(node_id: str) -> tuple[str, int]:
+def _safe_order(node_id: str) -> tuple[str, int, str]:
     """Ordering for a string of any shape, since an edge may name one that no node declares and
     sorting must never be what raises instead of reporting it."""
     try:
         return _order(node_id)
     except (ValueError, IndexError):
-        return node_id, -1
+        return node_id, -1, node_id
 
 
 def build(nodes: Iterable[Node] = (), edges: Iterable[tuple[str, Relation, str]] = ()) -> StateGraph:
