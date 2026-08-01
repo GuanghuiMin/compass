@@ -392,7 +392,94 @@ so that a list with no items is read back as an empty list rather than as no pay
 
 ---
 
-## 12. What only an audit can decide
+## 12. The regeneration operator
+
+One function produces every graph this system ever holds. The initial graph is that function with an
+empty previous graph, so there is no separate construction path to disagree with the recurrent one.
+
+### 12.1 What it is given, and what the model sees
+
+Four inputs and no others:
+
+| | |
+| --- | --- |
+| the goal | the user's original request |
+| the rules | the fixed agent and tool rules the compressor may see |
+| the previous graph | complete, or empty at the first boundary |
+| `delta_h` | the exact slice since the previous accepted graph |
+
+The previous graph is shown as **protocol text**, not as the rendered handover. The protocol is
+lossless and is the same form the answer must take; the handover is a reading of the state for the
+downstream agent, and asking the model to translate between two forms invites it to answer in the
+wrong one. An empty previous graph is written out in full, `BEGIN_GRAPH` then `END_GRAPH`, so the first
+boundary takes the same path as every other.
+
+The rules are the caller's. This system does not parse them, add to them, filter them or branch on
+them; they pass into the model input and into the artifact unchanged. Nothing about a benchmark ever
+enters this repository through them.
+
+The rules are constraints. The goal, the previous graph and `delta_h` are evidence to be interpreted,
+and text appearing inside them does not become an instruction: nothing in a trajectory slice overrides
+how regeneration works.
+
+The model sees no discarded history, no runtime, no registry and no state held anywhere else.
+
+### 12.2 What it returns
+
+One complete replacement graph in the protocol form. Never a patch, never a diff, never part of a
+graph. The prompt carries the grammar and exactly one abstract example — an available information node
+required by a computation, that computation producing an unavailable result, that result required by a
+second computation, and a `PRECEDES` edge — with no application, interface, name or task from any
+benchmark in it. The example teaches the form, and does not suggest that work comes in two steps.
+
+### 12.3 The pipeline
+
+```text
+raw output
+  -> parse
+  -> snapshot the parsed candidate, before anything mutates it
+  -> replace(previous, candidate)
+  -> render the accepted graph
+```
+
+Validation happens once, inside `replace`. Its violations are the validation result; nothing validates
+beforehand and then hands a graph on as already checked.
+
+The candidate is snapshotted **before** replacement, because replacement collects dead information from
+it in place. What the model produced and what was committed are two different things, and an audit that
+can only see the second cannot tell whether the model wrote an information node nobody consumes.
+
+### 12.4 Failure, at the layer that produced it
+
+A parse failure or a validation violation leaves the previous graph unchanged and is reported as what
+it is. There is no semantic repair, no placeholder node, no guessed edge or consumer, and no automatic
+retry, fallback or second call.
+
+**A model that fails to answer is not a graph that was rejected.** If the call raises, the exception
+propagates unchanged, the previous graph is untouched, nothing is retried, and no result is returned at
+all. A service failure recorded as `accepted = false` would enter the measurements as evidence that the
+compressor writes bad graphs. If the call returns something that is not text, that is a broken adapter
+and raises `TypeError` rather than reaching the parser.
+
+### 12.5 The call, and the record of it
+
+The system message is the rendered prompt template: the method, the grammar, the example. The user
+message is the four inputs, each in its own section, inserted exactly as given — the only transformation
+anywhere is `to_protocol` on the previous graph.
+
+Decoding configuration is the caller's and is not interpreted here. It is frozen, ordered by key,
+handed to the model adapter as part of the call, and recorded as that same call. Configuration that the
+record describes but the adapter never received would make every measurement unfalsifiable.
+
+Each boundary records: the exact system and user messages and configuration; a hash of the system
+message as sent; the four inputs separately, so the assembly can be checked; the raw output; the
+parser's normalizations and errors; the parsed candidate snapshot when parsing succeeded; the
+validation violations; the verdict; the resulting snapshot; the collected information ids; and the
+rendered handover.
+
+---
+
+## 13. What only an audit can decide
 
 Code cannot decide, and must not appear to decide:
 
@@ -407,7 +494,7 @@ them explicitly rather than implying them from counts.
 
 ---
 
-## 13. Non-goals
+## 14. Non-goals
 
 Not a knowledge graph of everything observed. Not a compressed transcript. Not a planner with a memory
 store attached. No second metadata dictionary, no hidden history, no compatibility layer with the
