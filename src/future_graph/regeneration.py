@@ -73,17 +73,22 @@ def build_user_message(goal: str, rules: str, previous: StateGraph, delta_h: str
 
 
 def build_call(goal: str, rules: str, previous: StateGraph, delta_h: str,
-               config: Mapping[str, ConfigScalar], prompt: str | None = None) -> ModelCall:
-    return ModelCall(system=prompt if prompt is not None else load_prompt(),
+               config: Mapping[str, ConfigScalar]) -> ModelCall:
+    """The system message is the repository's prompt. There is no way to send another one.
+
+    An experiment whose prompt cannot be recovered from the commit is not an experiment, so this takes
+    no override, and the mapping goes to `freeze_config` exactly as the caller passed it -- converting
+    it first would quietly accept shapes the interface does not, and could fold duplicate keys.
+    """
+    return ModelCall(system=load_prompt(),
                      user=build_user_message(goal, rules, previous, delta_h),
                      config=freeze_config(config))
 
 
 def regenerate_graph(goal: str, rules: str, previous: StateGraph, delta_h: str,
-                     model: Model, config: Mapping[str, ConfigScalar] = (),
-                     prompt: str | None = None) -> RegenerationResult:
+                     model: Model, config: Mapping[str, ConfigScalar]) -> RegenerationResult:
     """Ask for the whole remaining graph, and take it only if it holds together."""
-    call = build_call(goal, rules, previous, delta_h, dict(config), prompt)
+    call = build_call(goal, rules, previous, delta_h, config)
     previous_snapshot = previous.to_snapshot()
 
     raw = model(call)

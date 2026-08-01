@@ -11,11 +11,12 @@ import pytest
 
 from future_graph import (
     ArtifactError, ComputationNode, GRAMMAR, InformationKind, InformationNode, ModelCall,
-    PromptError, Relation, RegenerationRecord, StateGraph, build, load_prompt, parse,
-    regenerate_graph, to_protocol,
+    PromptError, Relation, RegenerationRecord, StateGraph, build, parse, regenerate_graph,
+    to_protocol,
 )
+from future_graph.artifacts import prompt_sha
 from future_graph.rendering import render
-from future_graph.regeneration import PROMPT_PATH, build_user_message
+from future_graph.regeneration import PROMPT_PATH, build_user_message, load_prompt
 
 
 class Stub:
@@ -102,11 +103,30 @@ def previous_graph():
         edges=[("i1", Relation.REQUIRES, "c1")])
 
 
-def run(answer, previous=None, **kw):
+def run(answer, previous=None, config=None):
     stub = Stub(answer)
     previous = previous_graph() if previous is None else previous
-    result = regenerate_graph("the goal", "the rules", previous, "the slice", stub, **kw)
+    result = regenerate_graph("the goal", "the rules", previous, "the slice", stub,
+                              {} if config is None else config)
     return stub, result
+
+
+EXAMPLE_HEADING = "# An example of the form"
+
+
+def prompt_example() -> str:
+    """The one graph under the example heading, located by the heading rather than by position.
+
+    Taking the last block in the file would silently start checking a different one the day the
+    prompt gains a section after the example.
+    """
+    text = PROMPT_PATH.read_text(encoding="utf-8")
+    assert text.count(EXAMPLE_HEADING) == 1, "the example heading is not unique"
+    after = text.split(EXAMPLE_HEADING, 1)[1]
+    assert after.count("```text") == 1, "the example section holds more than one fenced block"
+    block = after.split("```text", 1)[1].split("```", 1)[0]
+    assert block.count("BEGIN_GRAPH") == 1 and block.count("END_GRAPH") == 1
+    return block.strip() + "\n"
 
 
 # --------------------------------------------------------------------------- outcomes
@@ -204,7 +224,8 @@ def test_the_system_message_carries_the_grammar_the_parser_enforces():
 
 def test_the_input_is_not_tidied_on_the_way_in():
     stub = Stub(VALID)
-    regenerate_graph("  goal with space  ", "\nrules\n", StateGraph(), "  slice  ", stub)
+    regenerate_graph("  goal with space  ", "\nrules\n", StateGraph(), "  slice  ",
+                     stub, {})
     assert "BEGIN_ORIGINAL_GOAL\n  goal with space  \nEND" in stub.calls[0].user
     assert "BEGIN_DELTA_H\n  slice  \nEND" in stub.calls[0].user
 
@@ -259,6 +280,28 @@ def test_a_non_finite_config_value_is_refused_before_any_call(value):
     assert stub.calls == []
 
 
+@pytest.mark.parametrize("config", [[("a", 1)], [["a", 1]], (("a", 1),), "a=1", None])
+def test_a_config_that_is_not_a_mapping_is_refused_before_any_call(config):
+    """Converting it first would accept shapes the interface does not, and fold duplicate keys."""
+    stub = Stub(VALID)
+    with pytest.raises(TypeError, match="config is a mapping"):
+        regenerate_graph("g", "r", StateGraph(), "d", stub, config)
+    assert stub.calls == []
+
+
+def test_there_is_no_way_to_send_a_prompt_other_than_the_repository_one():
+    import inspect
+    from future_graph.regeneration import build_call
+    for function in (regenerate_graph, build_call):
+        assert "prompt" not in inspect.signature(function).parameters
+
+
+def test_config_is_required():
+    import inspect
+    parameter = inspect.signature(regenerate_graph).parameters["config"]
+    assert parameter.default is inspect.Parameter.empty
+
+
 def test_nothing_in_the_configuration_is_stringified():
     stub = Stub(VALID)
     result = regenerate_graph("g", "r", StateGraph(), "d", stub,
@@ -274,7 +317,7 @@ def test_a_model_that_raises_is_not_a_rejected_graph():
     before = previous.to_snapshot()
     stub = Stub(RuntimeError("the service is down"))
     with pytest.raises(RuntimeError, match="the service is down"):
-        regenerate_graph("g", "r", previous, "d", stub)
+        regenerate_graph("g", "r", previous, "d", stub, {})
     assert len(stub.calls) == 1
     assert previous.to_snapshot() == before
 
@@ -284,7 +327,7 @@ def test_a_model_that_returns_something_other_than_text_is_a_broken_adapter(answ
     previous = previous_graph()
     before = previous.to_snapshot()
     with pytest.raises(TypeError, match="a model returns text"):
-        regenerate_graph("g", "r", previous, "d", Stub(answer))
+        regenerate_graph("g", "r", previous, "d", Stub(answer), {})
     assert previous.to_snapshot() == before
 
 
@@ -319,9 +362,7 @@ def test_a_missing_template_fails_before_a_call(tmp_path):
 
 
 def test_the_example_in_the_prompt_parses_and_is_a_graph_that_would_be_accepted():
-    example = PROMPT_PATH.read_text(encoding="utf-8").rsplit("BEGIN_GRAPH", 1)[1]
-    text = "BEGIN_GRAPH" + example.split("END_GRAPH")[0] + "END_GRAPH\n"
-    outcome = parse(text)
+    outcome = parse(prompt_example())
     assert outcome.errors == (), outcome.errors
     from future_graph.validation import validate
     assert validate(outcome.graph) == ()
@@ -329,8 +370,7 @@ def test_the_example_in_the_prompt_parses_and_is_a_graph_that_would_be_accepted(
 
 def test_the_example_never_states_an_ordering_the_information_flow_already_states():
     """A redundant PRECEDES in the example is a redundant PRECEDES in every graph after it."""
-    example = PROMPT_PATH.read_text(encoding="utf-8").rsplit("BEGIN_GRAPH", 1)[1]
-    graph = parse("BEGIN_GRAPH" + example.split("END_GRAPH")[0] + "END_GRAPH\n").graph
+    graph = parse(prompt_example()).graph
     implied = {(producer, consumer)
                for information in graph.information
                for producer in graph.producers_of(information.id)
@@ -355,7 +395,6 @@ def test_a_rejected_record_round_trips():
 
 
 def test_the_hash_is_of_the_system_message_as_sent():
-    from future_graph import prompt_sha
     _, result = run(VALID)
     assert result.record.prompt_sha == prompt_sha(result.record.model_call.system)
     assert result.record.prompt_sha != prompt_sha(PROMPT_PATH.read_text(encoding="utf-8"))
@@ -402,13 +441,68 @@ def test_a_malformed_config_entry_is_rejected(config):
         RegenerationRecord.from_dict(raw)
 
 
-def test_a_malformed_snapshot_is_caught_when_the_graph_is_rebuilt():
-    from future_graph import SchemaError
+@pytest.mark.parametrize("field", ["previous_snapshot", "resulting_snapshot",
+                                   "parsed_candidate_snapshot"])
+def test_a_malformed_snapshot_is_caught_while_the_record_is_read(field):
+    """Not later, in the middle of an analysis, when someone happens to rebuild the graph."""
+    _, result = run(WITH_DEAD_INFORMATION)
+    raw = json.loads(json.dumps(result.record.to_dict()))
+    raw[field] = {"computations": [], "information": []}
+    with pytest.raises(ArtifactError, match=f"record {field}.*missing edges"):
+        RegenerationRecord.from_dict(raw)
+
+
+def test_a_handover_that_is_not_the_rendering_of_its_graph_is_rejected():
     raw = _record_dict()
-    raw["resulting_snapshot"] = {"computations": [], "information": []}
-    record = RegenerationRecord.from_dict(raw)
-    with pytest.raises(SchemaError, match="missing edges"):
-        StateGraph.from_snapshot(record.resulting_snapshot)
+    raw["handover"] = raw["handover"] + "and one more thing\n"
+    with pytest.raises(ArtifactError, match="handover is not the rendering"):
+        RegenerationRecord.from_dict(raw)
+
+
+def test_a_record_that_accepts_and_lists_violations_is_rejected():
+    raw = _record_dict()
+    raw["violations"] = [["cycle", "a message", []]]
+    with pytest.raises(ArtifactError, match="accepted and also lists violations"):
+        RegenerationRecord.from_dict(raw)
+
+
+def test_a_record_that_collected_from_a_graph_it_refused_is_rejected():
+    _, result = run(INVALID)
+    raw = json.loads(json.dumps(result.record.to_dict()))
+    raw["collected"] = ["i2"]
+    with pytest.raises(ArtifactError, match="collected information from a graph it did not accept"):
+        RegenerationRecord.from_dict(raw)
+
+
+def test_a_record_with_parse_errors_and_a_candidate_is_rejected():
+    _, result = run(UNPARSEABLE)
+    raw = json.loads(json.dumps(result.record.to_dict()))
+    raw["parsed_candidate_snapshot"] = {"computations": [], "information": [], "edges": []}
+    with pytest.raises(ArtifactError, match="parse errors and a parsed candidate"):
+        RegenerationRecord.from_dict(raw)
+
+
+def test_a_recorded_config_out_of_canonical_order_is_rejected():
+    _, result = run(VALID, config={"b": 1, "a": 2})
+    raw = json.loads(json.dumps(result.record.to_dict()))
+    raw["model_call"]["config"] = [["b", 1], ["a", 2]]
+    raw["prompt_sha"] = result.record.prompt_sha
+    with pytest.raises(ArtifactError, match="not in the order"):
+        RegenerationRecord.from_dict(raw)
+
+
+def test_a_recorded_config_with_a_repeated_key_is_rejected():
+    raw = _record_dict()
+    raw["model_call"]["config"] = [["a", 1], ["a", 2]]
+    with pytest.raises(ArtifactError, match="appears twice"):
+        RegenerationRecord.from_dict(raw)
+
+
+def test_a_recorded_non_finite_config_value_is_rejected():
+    raw = _record_dict()
+    raw["model_call"]["config"] = [["temperature", float("inf")]]
+    with pytest.raises(ArtifactError, match="never recordable"):
+        RegenerationRecord.from_dict(raw)
 
 
 def test_a_malformed_parse_error_entry_is_rejected():

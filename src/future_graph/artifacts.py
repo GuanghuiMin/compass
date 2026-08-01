@@ -123,16 +123,34 @@ class RegenerationRecord:
         candidate = raw["parsed_candidate_snapshot"]
         if candidate is not None and not isinstance(candidate, dict):
             raise ArtifactError("record parsed_candidate_snapshot: expected an object or null")
+
+        # A snapshot that only looks like an object is a damaged record, and finding that out later,
+        # when someone happens to rebuild the graph, is finding it out in the middle of an analysis.
+        _rebuild(raw["previous_snapshot"], "previous_snapshot")
+        resulting = _rebuild(raw["resulting_snapshot"], "resulting_snapshot")
+        if candidate is not None:
+            _rebuild(candidate, "parsed_candidate_snapshot")
+
+        from .rendering import render
+        if raw["handover"] != render(resulting):
+            raise ArtifactError("record handover is not the rendering of its resulting graph")
+
+        # Entries first, then the cross-field check: asking whether the outcome is consistent only
+        # means something once each field is known to be the shape it claims.
+        normalizations = tuple(_strings(raw["normalizations"], "normalizations"))
+        parse_errors = tuple(_parse_error(item) for item in raw["parse_errors"])
+        violations = tuple(_violation(item) for item in raw["violations"])
+        collected = tuple(_strings(raw["collected"], "collected"))
+        _check_outcome(raw)
+
         return cls(
             goal=raw["goal"], rules=raw["rules"], delta_h=raw["delta_h"],
             previous_snapshot=raw["previous_snapshot"], model_call=call,
-            raw_output=raw["raw_output"],
-            normalizations=tuple(_strings(raw["normalizations"], "normalizations")),
-            parse_errors=tuple(_parse_error(item) for item in raw["parse_errors"]),
-            parsed_candidate_snapshot=candidate,
-            violations=tuple(_violation(item) for item in raw["violations"]),
-            accepted=raw["accepted"], resulting_snapshot=raw["resulting_snapshot"],
-            collected=tuple(_strings(raw["collected"], "collected")), handover=raw["handover"],
+            raw_output=raw["raw_output"], normalizations=normalizations,
+            parse_errors=parse_errors, parsed_candidate_snapshot=candidate,
+            violations=violations, accepted=raw["accepted"],
+            resulting_snapshot=raw["resulting_snapshot"], collected=collected,
+            handover=raw["handover"],
         )
 
 
@@ -159,6 +177,33 @@ def _exact_keys(raw: object, expected: set[str], where: str) -> None:
         raise ArtifactError(f"{where}: unknown {', '.join(unknown)}")
 
 
+def _rebuild(snapshot: dict, where: str):
+    from .state_graph import StateGraph
+    from .schema import SchemaError
+    try:
+        return StateGraph.from_snapshot(snapshot)
+    except SchemaError as err:
+        raise ArtifactError(f"record {where}: {err}") from err
+
+
+def _check_outcome(raw: dict) -> None:
+    """The three outcomes each have one shape, and a record disagreeing with itself is not evidence."""
+    accepted, violations = raw["accepted"], raw["violations"]
+    candidate, collected = raw["parsed_candidate_snapshot"], raw["collected"]
+    if accepted:
+        if violations:
+            raise ArtifactError("record says accepted and also lists violations")
+        if candidate is None:
+            raise ArtifactError("record says accepted with nothing parsed")
+    else:
+        if candidate is None and violations:
+            raise ArtifactError("record has violations for a candidate that never parsed")
+        if collected:
+            raise ArtifactError("record collected information from a graph it did not accept")
+    if raw["parse_errors"] and candidate is not None:
+        raise ArtifactError("record has parse errors and a parsed candidate")
+
+
 def _call_from_dict(raw: dict) -> ModelCall:
     _exact_keys(raw, {"system", "user", "config"}, "a model call")
     for name in ("system", "user"):
@@ -176,7 +221,15 @@ def _call_from_dict(raw: dict) -> ModelCall:
         if not (value is None or isinstance(value, (str, int, float, bool))):
             raise ArtifactError(f"model call config {key!r}: {type(value).__name__} "
                                 "is not a recordable value")
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ArtifactError(f"model call config {key!r}: {value} was never recordable")
         config.append((key, value))
+    # The same shape freeze_config produces, or this record did not come from a call this makes.
+    keys = [key for key, _ in config]
+    if len(set(keys)) != len(keys):
+        raise ArtifactError("model call config: a key appears twice")
+    if keys != sorted(keys):
+        raise ArtifactError("model call config: keys are not in the order a call is built with")
     return ModelCall(system=raw["system"], user=raw["user"], config=tuple(config))
 
 
