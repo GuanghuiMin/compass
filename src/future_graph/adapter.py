@@ -89,5 +89,11 @@ def from_environment(client_factory: Callable[..., Any] | None = None) -> Adapte
     if client_factory is None:
         from openai import OpenAI
         client_factory = OpenAI
-    client = client_factory(base_url=base_url, api_key=api_key, timeout=TIMEOUT_S, max_retries=0)
+    try:
+        client = client_factory(base_url=base_url, api_key=api_key, timeout=TIMEOUT_S,
+                                max_retries=0)
+    except Exception as err:
+        # One kind of failure for "the adapter could not be built", so a caller can settle the
+        # adapter before claiming anything and know what a failure there means.
+        raise AdapterError(f"the client could not be constructed: {err}") from err
     return Adapter(client=client, model=model)

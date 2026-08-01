@@ -45,9 +45,12 @@ class OperationalFailure(RuntimeError):
 
 
 @dataclass(frozen=True)
-class Boundary:
-    episode: str
-    index: int
+class PreparedRun:
+    """Everything settled before the directory was claimed, so the run never re-derives it."""
+    run_dir: Path
+    commit_sha: str
+    prompt_sha: str
+    openai_version: str
 
 
 def validate_run_id(run_id: str) -> str:
@@ -82,16 +85,20 @@ def check_tree_clean() -> None:
         raise RunError("the working tree has changes; a run must name the commit it ran")
 
 
-def prepare_run(run_id: str, artifact_root: Path = ARTIFACT_ROOT,
-                check_git: bool = True) -> Path:
-    """Everything that must hold before the first call, in the order it must hold."""
-    check_openai_version()
-    if check_git:
-        check_tree_clean()
+def prepare_run(run_id: str, artifact_root: Path = ARTIFACT_ROOT) -> PreparedRun:
+    """Settle everything that can fail without sending a request, then claim the directory.
+
+    The claim comes last. A directory taken before the environment was checked would be an empty
+    run nobody can use and a run id nobody can reuse.
+    """
+    version = check_openai_version()
+    check_tree_clean()
     validate_run_id(run_id)
+    commit = git("rev-parse", "HEAD")
+    sha = prompt_sha(load_prompt())
     run_dir = Path(artifact_root) / run_id
-    run_dir.mkdir(parents=True, exist_ok=False)      # claims the directory, or refuses
-    return run_dir
+    run_dir.mkdir(parents=True, exist_ok=False)
+    return PreparedRun(run_dir=run_dir, commit_sha=commit, prompt_sha=sha, openai_version=version)
 
 
 def _now() -> str:
@@ -123,17 +130,17 @@ def write_record(path: Path, record: RegenerationRecord) -> None:
     os.replace(temporary, path)
 
 
-def _manifest(inputs: PreflightInputs, run_id: str, expected_prompt_sha: str,
-              status: str, started_at: str) -> dict:
+def _manifest(inputs: PreflightInputs, prepared: PreparedRun, status: str,
+              started_at: str) -> dict:
     return {
-        "run_id": run_id,
+        "run_id": prepared.run_dir.name,
         "status": status,
-        "commit": git("rev-parse", "HEAD"),
-        "prompt_sha": expected_prompt_sha,
+        "commit": prepared.commit_sha,
+        "prompt_sha": prepared.prompt_sha,
         "model": MODEL,
         "config": dict(FROZEN_CONFIG),
         "per_request_timeout_s": TIMEOUT_S,
-        "openai_version": openai_version(),
+        "openai_version": prepared.openai_version,
         "input_manifest_sha256": inputs.input_manifest_sha256,
         "source_kind": inputs.source_kind,
         "historical_byte_identity_verified": inputs.historical_byte_identity_verified,
@@ -150,38 +157,60 @@ def _manifest(inputs: PreflightInputs, run_id: str, expected_prompt_sha: str,
     }
 
 
-def replay(inputs: PreflightInputs, model: Model, run_dir: Path) -> dict:
+def replay(inputs: PreflightInputs, model: Model, prepared: PreparedRun) -> dict:
     """Regenerate every frozen boundary once, in order, recording each one before the next."""
     started = _now()
-    expected_prompt_sha = prompt_sha(load_prompt())
-    manifest_path = Path(run_dir) / "manifest.json"
-    manifest = _manifest(inputs, Path(run_dir).name, expected_prompt_sha, "planned", started)
+    manifest_path = prepared.run_dir / "manifest.json"
+    manifest = _manifest(inputs, prepared, "planned", started)
     _write_json(manifest_path, manifest, overwrite=True)
     manifest["status"] = "running"
     _write_json(manifest_path, manifest, overwrite=True)
 
-    try:
-        for episode in inputs.episodes:
-            episode_dir = Path(run_dir) / f"episode_{episode.id}"
-            episode_dir.mkdir(exist_ok=False)
-            previous = StateGraph()                  # each episode starts from nothing
-            for index, delta_h in episode.boundaries:
-                result = regenerate_graph(episode.goal, episode.rules, previous, delta_h,
-                                          model, FROZEN_CONFIG)
-                if result.record.prompt_sha != expected_prompt_sha:
-                    raise OperationalFailure(
-                        f"{episode.id} #{index}: the prompt sent does not hash to the one this "
-                        "run declared")
-                write_record(episode_dir / f"boundary_{index:03d}.json", result.record)
-                manifest["completed_boundaries"][episode.id] = index + 1
-                _write_json(manifest_path, manifest, overwrite=True)
-                previous = result.graph
-    except BaseException as err:
+    def stop(layer: str, err: BaseException, where: dict | None) -> None:
+        """Record which layer failed and which frozen boundary it stopped at, then let it travel."""
         manifest["status"] = "operational_failure"
-        manifest["operational_failure"] = {"layer": type(err).__name__, "message": str(err)[:2000]}
+        manifest["operational_failure"] = {
+            "layer": layer,
+            "exception_type": type(err).__name__,
+            "message": str(err)[:2000],
+            "boundary": where,
+        }
         manifest["finished_at"] = _now()
         _write_json(manifest_path, manifest, overwrite=True)
-        raise
+
+    for episode in inputs.episodes:
+        episode_dir = prepared.run_dir / f"episode_{episode.id}"
+        try:
+            episode_dir.mkdir(exist_ok=False)
+        except BaseException as err:
+            stop("run", err, {"episode": episode.id, "compaction_index": None})
+            raise
+        previous = StateGraph()                      # each episode starts from nothing
+        for index, delta_h in episode.boundaries:
+            where = {"episode": episode.id, "compaction_index": index}
+            try:
+                result = regenerate_graph(episode.goal, episode.rules, previous, delta_h,
+                                          model, FROZEN_CONFIG)
+            except BaseException as err:
+                stop("regeneration", err, where)
+                raise
+
+            if result.record.prompt_sha != prepared.prompt_sha:
+                err = OperationalFailure(
+                    f"{episode.id} #{index}: the prompt sent does not hash to the one this run "
+                    "declared")
+                stop("prompt_identity", err, where)
+                raise err
+
+            try:
+                write_record(episode_dir / f"boundary_{index:03d}.json", result.record)
+            except BaseException as err:
+                stop("boundary_artifact", err, where)
+                raise
+
+            manifest["completed_boundaries"][episode.id] = index + 1
+            _write_json(manifest_path, manifest, overwrite=True)
+            previous = result.graph
 
     manifest["status"] = "completed"
     manifest["finished_at"] = _now()

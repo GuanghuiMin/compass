@@ -18,7 +18,8 @@ from future_graph.artifacts import ModelCall, RegenerationRecord, prompt_sha
 from future_graph.episodes import InputError, canonical_inputs_sha256, load
 from future_graph.regeneration import load_prompt
 from future_graph.run import (
-    FROZEN_CONFIG, OperationalFailure, RunError, prepare_run, replay, validate_run_id, write_record,
+    FROZEN_CONFIG, OperationalFailure, RunError, prepare_run, replay, validate_run_id,
+    write_record,
 )
 
 VALID = """\
@@ -112,6 +113,14 @@ def rewrite_manifest(manifest_path, change):
     change(manifest)
     manifest["input_manifest_sha256"] = canonical_inputs_sha256(manifest["inputs"])
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def prepared(run_dir, prompt=None):
+    """A PreparedRun for tests: what prepare_run would have settled, without git or a version check."""
+    from future_graph.run import PreparedRun
+    return PreparedRun(run_dir=run_dir, commit_sha="0" * 40,
+                       prompt_sha=prompt if prompt is not None else prompt_sha(load_prompt()),
+                       openai_version="1.60.1")
 
 
 class Stub:
@@ -254,7 +263,7 @@ def test_each_boundary_is_asked_once_and_the_accepted_graph_moves_forward(tmp_pa
     stub = Stub(VALID)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    result = replay(inputs, stub, run_dir)
+    result = replay(inputs, stub, prepared(run_dir))
     assert len(stub.calls) == 3
     assert result["status"] == "completed"
     assert result["completed_boundaries"] == {"ep_one": 2, "ep_two": 1}
@@ -267,7 +276,7 @@ def test_each_episode_starts_from_an_empty_graph(tmp_path):
     inputs = load(source, manifest, repo)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    replay(inputs, Stub(VALID), run_dir)
+    replay(inputs, Stub(VALID), prepared(run_dir))
     first_of_second = json.loads((run_dir / "episode_ep_two" / "boundary_000.json").read_text())
     assert first_of_second["previous_snapshot"] == {"computations": [], "information": [],
                                                     "edges": []}
@@ -278,7 +287,7 @@ def test_a_refused_graph_leaves_the_previous_one_in_front_of_the_next_boundary(t
     inputs = load(source, manifest, repo)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    replay(inputs, Stub(VALID, CYCLE, VALID), run_dir)
+    replay(inputs, Stub(VALID, CYCLE, VALID), prepared(run_dir))
     rejected = json.loads((run_dir / "episode_ep_one" / "boundary_001.json").read_text())
     assert rejected["accepted"] is False
     assert rejected["resulting_snapshot"] == rejected["previous_snapshot"]
@@ -290,7 +299,7 @@ def test_collection_is_visible_in_the_record(tmp_path):
     inputs = load(source, manifest, repo)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    replay(inputs, Stub(WITH_DEAD), run_dir)
+    replay(inputs, Stub(WITH_DEAD), prepared(run_dir))
     first = json.loads((run_dir / "episode_ep_one" / "boundary_000.json").read_text())
     assert first["collected"] == ["i1"]
     assert [i["id"] for i in first["parsed_candidate_snapshot"]["information"]] == ["i1"]
@@ -303,7 +312,7 @@ def test_the_call_carries_the_episode_goal_rules_and_slice(tmp_path):
     stub = Stub(VALID)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    replay(inputs, stub, run_dir)
+    replay(inputs, stub, prepared(run_dir))
     user = stub.calls[0].user
     assert "the goal of ep_one" in user
     assert "the fixed rules of ep_one" in user
@@ -326,16 +335,47 @@ def test_a_model_failure_stops_the_run_and_leaves_later_work_absent(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     with pytest.raises(RuntimeError, match="the service is down"):
-        replay(inputs, stub, run_dir)
+        replay(inputs, stub, prepared(run_dir))
 
     assert (run_dir / "episode_ep_one" / "boundary_000.json").exists()
     assert not (run_dir / "episode_ep_one" / "boundary_001.json").exists()
     assert not (run_dir / "episode_ep_two").exists()
     recorded = json.loads((run_dir / "manifest.json").read_text())
     assert recorded["status"] == "operational_failure"
-    assert recorded["operational_failure"]["layer"] == "RuntimeError"
+    assert recorded["operational_failure"]["layer"] == "regeneration"
+    assert recorded["operational_failure"]["exception_type"] == "RuntimeError"
     assert recorded["completed_boundaries"] == {"ep_one": 1, "ep_two": 0}
     assert len(stub.calls) == 2
+
+
+def test_a_failure_records_the_exact_frozen_boundary_it_stopped_at(tmp_path):
+    """A run that stopped somewhere unknown cannot be resumed by a person either."""
+    source, manifest, repo = build_fixture(
+        tmp_path, episodes=(("ep_one", ["a", "b"]), ("ep_two", ["c", "d", "e"])))
+    inputs = load(source, manifest, repo)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    stub = Stub(VALID, VALID, VALID, RuntimeError("gone"))
+    with pytest.raises(RuntimeError, match="gone"):
+        replay(inputs, stub, prepared(run_dir))
+    failure = json.loads((run_dir / "manifest.json").read_text())["operational_failure"]
+    assert failure["boundary"] == {"episode": "ep_two", "compaction_index": 1}
+    assert failure["layer"] == "regeneration"
+
+
+def test_an_artifact_failure_is_recorded_as_its_own_layer(tmp_path, monkeypatch):
+    source, manifest, repo = build_fixture(tmp_path)
+    inputs = load(source, manifest, repo)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    import future_graph.run as run_module
+    monkeypatch.setattr(run_module.RegenerationRecord, "from_dict",
+                        staticmethod(lambda _raw: (_ for _ in ()).throw(ValueError("bad"))))
+    with pytest.raises(OperationalFailure):
+        replay(inputs, Stub(VALID), prepared(run_dir))
+    failure = json.loads((run_dir / "manifest.json").read_text())["operational_failure"]
+    assert failure["layer"] == "boundary_artifact"
+    assert failure["boundary"] == {"episode": "ep_one", "compaction_index": 0}
 
 
 def test_a_failure_is_never_written_as_a_refused_graph(tmp_path):
@@ -344,7 +384,7 @@ def test_a_failure_is_never_written_as_a_refused_graph(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     with pytest.raises(AdapterError):
-        replay(inputs, Stub(AdapterError("no choices")), run_dir)
+        replay(inputs, Stub(AdapterError("no choices")), prepared(run_dir))
     assert list((run_dir / "episode_ep_one").glob("boundary_*.json")) == []
 
 
@@ -355,7 +395,7 @@ def test_the_manifest_records_what_the_run_declared(tmp_path):
     inputs = load(source, manifest, repo)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    recorded = replay(inputs, Stub(VALID), run_dir)
+    recorded = replay(inputs, Stub(VALID), prepared(run_dir))
     assert recorded["input_manifest_sha256"] == inputs.input_manifest_sha256
     assert recorded["prompt_sha"] == prompt_sha(load_prompt())
     assert recorded["model"] == MODEL
@@ -369,15 +409,16 @@ def test_the_manifest_records_what_the_run_declared(tmp_path):
     assert recorded["started_at"] and recorded["finished_at"]
 
 
-def test_every_record_must_hash_to_the_prompt_the_run_declared(tmp_path, monkeypatch):
+def test_every_record_must_hash_to_the_prompt_the_run_declared(tmp_path):
     source, manifest, repo = build_fixture(tmp_path)
     inputs = load(source, manifest, repo)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    import future_graph.run as run_module
-    monkeypatch.setattr(run_module, "prompt_sha", lambda _text: "0" * 64)
     with pytest.raises(OperationalFailure, match="does not hash"):
-        replay(inputs, Stub(VALID), run_dir)
+        replay(inputs, Stub(VALID), prepared(run_dir, prompt="0" * 64))
+    failure = json.loads((run_dir / "manifest.json").read_text())["operational_failure"]
+    assert failure["layer"] == "prompt_identity"
+    assert failure["boundary"] == {"episode": "ep_one", "compaction_index": 0}
 
 
 # --------------------------------------------------------------------------- artifacts
@@ -387,7 +428,7 @@ def test_a_record_is_read_back_before_it_is_placed(tmp_path):
     inputs = load(source, manifest, repo)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    replay(inputs, Stub(VALID), run_dir)
+    replay(inputs, Stub(VALID), prepared(run_dir))
     path = run_dir / "episode_ep_one" / "boundary_000.json"
     assert RegenerationRecord.from_dict(json.loads(path.read_text()))
     assert not list(path.parent.glob("*.tmp"))
@@ -403,7 +444,7 @@ def test_an_unreadable_record_is_never_placed(tmp_path, monkeypatch):
     monkeypatch.setattr(run_module.RegenerationRecord, "from_dict",
                         staticmethod(lambda _raw: (_ for _ in ()).throw(ValueError("bad"))))
     with pytest.raises(OperationalFailure, match="did not read back"):
-        replay(inputs, Stub(VALID), run_dir)
+        replay(inputs, Stub(VALID), prepared(run_dir))
     episode_dir = run_dir / "episode_ep_one"
     assert not (episode_dir / "boundary_000.json").exists()
     assert not list(episode_dir.glob("*.tmp"))
@@ -414,21 +455,52 @@ def test_an_existing_boundary_record_is_never_replaced(tmp_path):
     inputs = load(source, manifest, repo)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    replay(inputs, Stub(VALID), run_dir)
+    replay(inputs, Stub(VALID), prepared(run_dir))
     path = run_dir / "episode_ep_one" / "boundary_000.json"
     record = RegenerationRecord.from_dict(json.loads(path.read_text()))
     with pytest.raises(OperationalFailure, match="never replaced"):
         write_record(path, record)
 
 
-def test_the_run_manifest_is_rewritten_as_the_status_moves(tmp_path):
+def test_the_run_manifest_moves_through_its_states_in_order(tmp_path, monkeypatch):
     """Unlike a boundary record: a manifest that could not be rewritten could not record a failure."""
     source, manifest, repo = build_fixture(tmp_path)
     inputs = load(source, manifest, repo)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    replay(inputs, Stub(VALID), run_dir)
-    assert json.loads((run_dir / "manifest.json").read_text())["status"] == "completed"
+
+    import future_graph.run as run_module
+    seen = []
+    original = run_module._write_json
+
+    def watch(path, payload, overwrite):
+        if path.name == "manifest.json":
+            seen.append(payload["status"])
+        return original(path, payload, overwrite)
+
+    monkeypatch.setattr(run_module, "_write_json", watch)
+    replay(inputs, Stub(VALID), prepared(run_dir))
+    assert seen[0] == "planned"
+    assert seen[1] == "running"
+    assert seen[-1] == "completed"
+    assert set(seen) == {"planned", "running", "completed"}
+
+
+def test_a_run_of_thirty_two_boundaries_makes_exactly_thirty_two_calls(tmp_path):
+    """The shape of the real corpus, so the budget is checked against the number that matters."""
+    shape = [("ep_a", 5), ("ep_b", 7), ("ep_c", 7), ("ep_d", 11), ("ep_e", 2)]
+    episodes = tuple((name, [f"slice {i} of {name}" for i in range(n)]) for name, n in shape)
+    source, manifest, repo = build_fixture(tmp_path, episodes=episodes)
+    inputs = load(source, manifest, repo)
+    assert inputs.boundary_count == 32
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    stub = Stub(VALID)
+    recorded = replay(inputs, stub, prepared(run_dir))
+    assert len(stub.calls) == 32
+    assert recorded["completed_boundaries"] == {name: n for name, n in shape}
+    assert sum(1 for _ in run_dir.glob("episode_*/boundary_*.json")) == 32
 
 
 # --------------------------------------------------------------------------- run preconditions
@@ -439,15 +511,50 @@ def test_a_run_id_that_is_not_one_component_is_refused(bad):
         validate_run_id(bad)
 
 
-def test_a_run_directory_that_exists_is_refused(tmp_path):
+@pytest.fixture
+def allow_prepare(monkeypatch):
+    """Let prepare_run reach its claim without a clean tree or the pinned version installed."""
+    import future_graph.run as run_module
+    monkeypatch.setattr(run_module, "check_tree_clean", lambda: None)
+    monkeypatch.setattr(run_module, "check_openai_version", lambda: "1.60.1")
+    monkeypatch.setattr(run_module, "git", lambda *a: "0" * 40)
+    return run_module
+
+
+def test_a_run_directory_that_exists_is_refused(tmp_path, allow_prepare):
     (tmp_path / "taken").mkdir()
     with pytest.raises(FileExistsError):
-        prepare_run("taken", tmp_path, check_git=False)
+        prepare_run("taken", tmp_path)
 
 
-def test_claiming_a_run_directory_creates_it(tmp_path):
-    run_dir = prepare_run("fresh", tmp_path, check_git=False)
-    assert run_dir.is_dir() and run_dir.name == "fresh"
+def test_claiming_a_run_directory_settles_everything_first(tmp_path, allow_prepare):
+    run = prepare_run("fresh", tmp_path)
+    assert run.run_dir.is_dir() and run.run_dir.name == "fresh"
+    assert run.commit_sha == "0" * 40
+    assert run.prompt_sha == prompt_sha(load_prompt())
+    assert run.openai_version == "1.60.1"
+
+
+def test_there_is_no_way_to_skip_the_clean_tree_check():
+    import inspect
+    assert "check_git" not in inspect.signature(prepare_run).parameters
+
+
+def test_a_dirty_tree_refuses_before_the_directory_exists(tmp_path, monkeypatch):
+    import future_graph.run as run_module
+    monkeypatch.setattr(run_module, "check_openai_version", lambda: "1.60.1")
+    monkeypatch.setattr(run_module, "git", lambda *a: "M something" if a[0] == "status" else "x")
+    with pytest.raises(RunError, match="working tree has changes"):
+        prepare_run("never", tmp_path)
+    assert not (tmp_path / "never").exists()
+
+
+def test_the_wrong_openai_version_refuses_before_the_directory_exists(tmp_path, monkeypatch):
+    import future_graph.run as run_module
+    monkeypatch.setattr(run_module, "openai_version", lambda: "2.46.0")
+    with pytest.raises(RunError, match="pinned to 1.60.1"):
+        prepare_run("never", tmp_path)
+    assert not (tmp_path / "never").exists()
 
 
 def test_the_pinned_openai_version_is_checked_not_only_recorded():
@@ -578,7 +685,7 @@ def test_an_empty_answer_becomes_a_parse_rejection(tmp_path):
     inputs = load(source, manifest, repo)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    replay(inputs, Stub(""), run_dir)
+    replay(inputs, Stub(""), prepared(run_dir))
     first = json.loads((run_dir / "episode_ep_one" / "boundary_000.json").read_text())
     assert first["accepted"] is False and first["parse_errors"]
     assert first["parsed_candidate_snapshot"] is None
@@ -586,13 +693,56 @@ def test_an_empty_answer_becomes_a_parse_rejection(tmp_path):
 
 # --------------------------------------------------------------------------- verify-only
 
-def test_verify_only_touches_no_environment_and_makes_no_call(tmp_path, monkeypatch, capsys):
+def load_cli():
+    """Import the command as a module so its own main() is what gets tested."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / "scripts" / "replay_preflight.py"
+    spec = importlib.util.spec_from_file_location("replay_preflight", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_verify_only_builds_no_adapter_and_creates_nothing(tmp_path, monkeypatch):
     source, manifest, repo = build_fixture(tmp_path)
+    cli = load_cli()
     for name in (BASE_URL_VAR, MODEL_VAR, API_KEY_VAR):
         monkeypatch.delenv(name, raising=False)
-    inputs = load(source, manifest, repo)          # what --verify-only does, and nothing more
-    assert inputs.boundary_count == 3
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("--verify-only must not construct an adapter")
+
+    monkeypatch.setattr(cli, "from_environment", refuse)
+    monkeypatch.setattr(cli, "MANIFEST_PATH", manifest)
+    monkeypatch.setattr(cli, "ARTIFACT_ROOT", tmp_path / "artifacts" / "preflight")
+    monkeypatch.setattr(cli, "load", lambda src, mpath: load(src, mpath, repo))
+
+    assert cli.main(["--source-dir", str(source), "--verify-only"]) == 0
     assert not (tmp_path / "artifacts").exists()
+
+
+def test_a_real_run_needs_a_run_id(tmp_path, monkeypatch):
+    source, manifest, repo = build_fixture(tmp_path)
+    cli = load_cli()
+    monkeypatch.setattr(cli, "MANIFEST_PATH", manifest)
+    monkeypatch.setattr(cli, "load", lambda src, mpath: load(src, mpath, repo))
+    with pytest.raises(SystemExit):
+        cli.main(["--source-dir", str(source)])
+
+
+def test_the_adapter_is_settled_before_a_directory_is_claimed(tmp_path, monkeypatch):
+    """A bad environment must not leave an empty run under a run id nobody can reuse."""
+    source, manifest, repo = build_fixture(tmp_path)
+    cli = load_cli()
+    root = tmp_path / "artifacts" / "preflight"
+    monkeypatch.setattr(cli, "MANIFEST_PATH", manifest)
+    monkeypatch.setattr(cli, "ARTIFACT_ROOT", root)
+    monkeypatch.setattr(cli, "load", lambda src, mpath: load(src, mpath, repo))
+    monkeypatch.setattr(cli, "from_environment",
+                        lambda: (_ for _ in ()).throw(AdapterError("no key")))
+    with pytest.raises(AdapterError):
+        cli.main(["--source-dir", str(source), "--run-id", "attempt"])
+    assert not (root / "attempt").exists()
 
 
 def test_the_command_offers_no_way_to_aim_elsewhere():

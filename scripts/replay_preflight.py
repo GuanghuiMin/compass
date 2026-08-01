@@ -22,14 +22,14 @@ from future_graph.episodes import MANIFEST_PATH, load        # noqa: E402
 from future_graph.run import ARTIFACT_ROOT, prepare_run, replay   # noqa: E402
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-dir", required=True, type=Path,
                         help="directory holding the frozen episode files")
     parser.add_argument("--run-id", help="one path component under artifacts/preflight/")
     parser.add_argument("--verify-only", action="store_true",
                         help="check every frozen input and stop, making no call")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     inputs = load(args.source_dir, MANIFEST_PATH)
     print(f"verified {len(inputs.episodes)} episodes, {inputs.boundary_count} boundaries")
@@ -43,9 +43,12 @@ def main() -> int:
     if not args.run_id:
         parser.error("--run-id is required unless --verify-only")
 
-    run_dir = prepare_run(args.run_id, ARTIFACT_ROOT)
-    print(f"claimed {run_dir}")
-    manifest = replay(inputs, from_environment(), run_dir)
+    # The adapter is settled first. A directory claimed before the environment was checked is an
+    # empty run nobody can use under a run id nobody can reuse.
+    adapter = from_environment()
+    prepared = prepare_run(args.run_id, ARTIFACT_ROOT)
+    print(f"claimed {prepared.run_dir} at {prepared.commit_sha}")
+    manifest = replay(inputs, adapter, prepared)
     print(f"status {manifest['status']}, completed {manifest['completed_boundaries']}")
     return 0
 
