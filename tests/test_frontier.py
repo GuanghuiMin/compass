@@ -15,12 +15,17 @@ def info(iid, description, available=True, kind=InformationKind.FACT):
 
 
 def chain():
-    """login -> token -> pay, with the token not yet in hand."""
+    """Obtain a token, then pay: the token is a result nothing has established yet.
+
+    It is not a runtime reference. A reference names something the agent bound, and nothing has been
+    bound until the login runs; it becomes one in the snapshot after that.
+    """
     return build(
         nodes=[comp("c1", "Obtain a usable Venmo access token"),
                comp("c2", "Execute the remaining payments"),
                info("i1", "Confirmed Venmo login interface", available=True),
-               info("i2", "Venmo access token", available=False)],
+               info("i2", "A usable access token", available=False,
+                    kind=InformationKind.RESULT)],
         edges=[("i1", Relation.REQUIRES, "c1"), ("c1", Relation.PRODUCES, "i2"),
                ("i2", Relation.REQUIRES, "c2")])
 

@@ -130,6 +130,13 @@ def test_every_fault_is_reported_not_just_the_first():
                              "dangling_edge"}
 
 
+def test_a_dangling_id_of_any_shape_is_a_violation_and_not_an_exception():
+    """Sorting must never be the thing that raises: the id in an edge can be anything at all."""
+    g = build(nodes=[comp("c1")], edges=[("not-an-id", Relation.REQUIRES, "c1"),
+                                         ("c1", Relation.PRECEDES, "")])
+    assert codes(g).count("dangling_edge") == 2
+
+
 def test_violations_read_as_sentences():
     g = build(nodes=[comp("c1")], edges=[("i9", Relation.REQUIRES, "c1")])
     assert "i9" in str(validate(g)[0])

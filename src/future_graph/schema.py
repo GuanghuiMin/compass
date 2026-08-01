@@ -76,7 +76,16 @@ def _check_scalar(value: object, where: str) -> Scalar:
     if is_serialized_container(value):
         raise SchemaError(f"{where}: a stringified container is not a value; "
                           "an established result belongs in its own information node")
+    if isinstance(value, str):
+        _check_single_line(value, where)
     return value
+
+
+def _check_single_line(text: str, where: str) -> str:
+    """Protocol-visible text is one line. A line protocol cannot carry anything else unambiguously."""
+    if any(c in text for c in "\r\n"):
+        raise SchemaError(f"{where}: text spans more than one line")
+    return text
 
 
 def _check_text(text: object, where: str) -> str:
@@ -84,7 +93,17 @@ def _check_text(text: object, where: str) -> str:
         raise SchemaError(f"{where}: must be non-empty text")
     if is_serialized_container(text):
         raise SchemaError(f"{where}: a stringified container is not a description")
-    return text.strip()
+    return _check_single_line(text.strip(), where)
+
+
+def _check_key(key: object, where: str) -> str:
+    """An argument name or a mapping key. `=` separates it from its value, so it cannot contain one."""
+    if not isinstance(key, str) or not key.strip():
+        raise SchemaError(f"{where}: must be non-empty text")
+    name = key.strip()
+    if "=" in name:
+        raise SchemaError(f"{where}: {name!r} contains '=', which separates a name from its value")
+    return _check_single_line(name, where)
 
 
 def _check_id(value: object, prefix: str, where: str) -> str:
@@ -129,8 +148,7 @@ class MappingPayload:
             if not isinstance(pair, tuple) or len(pair) != 2:
                 raise SchemaError(f"MappingPayload.values[{i}]: must be a (key, value) pair")
             key, value = pair
-            if not isinstance(key, str) or not key.strip():
-                raise SchemaError(f"MappingPayload.values[{i}]: key must be non-empty text")
+            _check_key(key, f"MappingPayload.values[{i}] key")
             if key in seen:
                 raise SchemaError(f"MappingPayload: duplicate key {key!r}")
             seen.add(key)
@@ -145,8 +163,8 @@ class RuntimeReferencePayload:
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
             raise SchemaError("RuntimeReferencePayload.name: must be non-empty text")
-        if self.name != self.name.strip():
-            object.__setattr__(self, "name", self.name.strip())
+        object.__setattr__(self, "name",
+                           _check_single_line(self.name.strip(), "RuntimeReferencePayload.name"))
 
 
 @dataclass(frozen=True)
@@ -158,12 +176,14 @@ class ContractPayload:
     def __post_init__(self) -> None:
         if not isinstance(self.operation, str) or not self.operation.strip():
             raise SchemaError("ContractPayload.operation: must be non-empty text")
+        _check_single_line(self.operation, "ContractPayload.operation")
         for name, seq in (("parameters", self.parameters), ("constraints", self.constraints)):
             if not isinstance(seq, tuple):
                 raise SchemaError(f"ContractPayload.{name}: must be a tuple")
             for i, item in enumerate(seq):
                 if not isinstance(item, str) or not item.strip():
                     raise SchemaError(f"ContractPayload.{name}[{i}]: must be non-empty text")
+                _check_single_line(item, f"ContractPayload.{name}[{i}]")
 
 
 InformationPayload = Union[ScalarPayload, ListPayload, MappingPayload,
@@ -204,10 +224,11 @@ class ComputationNode:
             object.__setattr__(self, "operation", self.operation.strip())
         if not isinstance(self.arguments, Mapping):
             raise SchemaError(f"{self.id}.arguments: must be a mapping")
+        if self.operation is not None:
+            _check_single_line(self.operation, f"{self.id}.operation")
         checked: dict[str, ArgumentValue] = {}
         for key, value in self.arguments.items():
-            if not isinstance(key, str) or not key.strip():
-                raise SchemaError(f"{self.id}.arguments: argument name must be non-empty text")
+            key = _check_key(key, f"{self.id}.arguments name")
             if isinstance(value, InformationReference):
                 checked[key] = value
             else:
@@ -218,6 +239,39 @@ class ComputationNode:
     def referenced_information(self) -> tuple[str, ...]:
         return tuple(sorted(v.information_id for v in self.arguments.values()
                             if isinstance(v, InformationReference)))
+
+
+AVAILABLE_ONLY_KINDS = (InformationKind.CONTRACT, InformationKind.RUNTIME_REFERENCE)
+
+TYPED_PAYLOAD_OF_KIND = {
+    InformationKind.CONTRACT: ContractPayload,
+    InformationKind.RUNTIME_REFERENCE: RuntimeReferencePayload,
+}
+
+
+def _check_kind_and_payload(node_id: str, kind: InformationKind, available: bool,
+                            payload: "InformationPayload | None") -> None:
+    """A kind that does not constrain its payload is a label, and counting labels counts nothing.
+
+    An interface or a bound name that does not exist yet is a RESULT describing what a computation
+    will establish; it becomes a CONTRACT or a RUNTIME_REFERENCE in a later snapshot, once it does.
+    Availability never flips on one node, because a consumer must not be able to read a thing that
+    has not happened.
+    """
+    if kind in AVAILABLE_ONLY_KINDS and not available:
+        raise SchemaError(
+            f"{node_id}: {kind.value} says something exists, so it cannot be unavailable; "
+            "what a computation will establish is a result until it is established")
+    if not available and payload is not None:
+        raise SchemaError(f"{node_id}: information that is not available yet has no payload, "
+                          "because there is nothing yet to carry")
+    for other_kind, payload_type in TYPED_PAYLOAD_OF_KIND.items():
+        if kind is other_kind and available and not isinstance(payload, payload_type):
+            raise SchemaError(f"{node_id}: an available {kind.value} carries a "
+                              f"{payload_type.__name__}")
+        if kind is not other_kind and isinstance(payload, payload_type):
+            raise SchemaError(f"{node_id}: a {payload_type.__name__} belongs to "
+                              f"{other_kind.value}, not to {kind.value}")
 
 
 @dataclass(frozen=True)
@@ -238,14 +292,7 @@ class InformationNode:
             raise SchemaError(f"{self.id}.available: must be true or false")
         if self.payload is not None and not isinstance(self.payload, _PAYLOAD_TYPES):
             raise SchemaError(f"{self.id}.payload: {type(self.payload).__name__} is not a payload")
-        if self.kind is InformationKind.RUNTIME_REFERENCE and self.payload is not None \
-                and not isinstance(self.payload, RuntimeReferencePayload):
-            raise SchemaError(f"{self.id}: a runtime reference carries a name, "
-                              f"not a {type(self.payload).__name__}")
-        if self.kind is InformationKind.CONTRACT and self.payload is not None \
-                and not isinstance(self.payload, ContractPayload):
-            raise SchemaError(f"{self.id}: a contract carries an interface, "
-                              f"not a {type(self.payload).__name__}")
+        _check_kind_and_payload(self.id, self.kind, self.available, self.payload)
 
 
 Node = Union[ComputationNode, InformationNode]

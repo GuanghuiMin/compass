@@ -1,8 +1,8 @@
 """Dead information goes; a bad candidate changes nothing at all."""
 
 from future_graph import (
-    ComputationNode, InformationKind, InformationNode, InformationReference, Relation, StateGraph,
-    build,
+    ComputationNode, ContractPayload, InformationKind, InformationNode, InformationReference,
+    Relation, StateGraph, build,
 )
 from future_graph.lifecycle import collect_dead_information, replace
 
@@ -60,7 +60,8 @@ def test_collection_is_a_fixpoint():
 
 def test_nothing_is_collected_on_the_grounds_that_it_used_to_matter():
     g = build(nodes=[comp("c1"), info("i1", kind=InformationKind.CONTRACT,
-                                      description="Venmo login")],
+                                      description="Venmo login",
+                                      payload=ContractPayload("apis.venmo.login", ("username",)))],
               edges=[("i1", Relation.REQUIRES, "c1")])
     collect_dead_information(g)
     assert [i.id for i in g.information] == ["i1"]

@@ -26,10 +26,14 @@ EDGE = "EDGE"
 
 INFORMATION_FIELDS = frozenset({
     "kind", "available", "description",
-    "value", "item", "entry",
+    "payload-type", "value", "item", "entry",
     "runtime-name",
     "contract-operation", "contract-parameter", "contract-constraint",
 })
+
+# A list and a mapping say which they are, because a list of nothing and no list at all are
+# different states and "the query matched nothing" is worth being able to write down.
+DECLARED_PAYLOADS = ("list", "mapping")
 COMPUTATION_FIELDS = frozenset({"description", "operation", "argument"})
 
 
@@ -61,8 +65,10 @@ def _information_block(node: InformationNode) -> list[str]:
     if isinstance(payload, ScalarPayload):
         lines.append(f"value: {_scalar_out(payload.value)}")
     elif isinstance(payload, ListPayload):
+        lines.append("payload-type: list")
         lines += [f"item: {_scalar_out(v)}" for v in payload.values]
     elif isinstance(payload, MappingPayload):
+        lines.append("payload-type: mapping")
         lines += [f"entry {k} = {_scalar_out(v)}" for k, v in payload.values]
     elif isinstance(payload, RuntimeReferencePayload):
         lines.append(f"runtime-name: {payload.name}")
@@ -122,12 +128,20 @@ available: true | false
 description: <text>
   and at most one payload, written as one of:
     value: <scalar>
-    item: <scalar>                 (repeat for a list)
-    entry <key> = <scalar>         (repeat for a mapping)
+    payload-type: list
+    item: <scalar>                 (repeat, zero or more)
+    payload-type: mapping
+    entry <key> = <scalar>         (repeat, zero or more)
     runtime-name: <name the agent bound>
     contract-operation: <operation>
     contract-parameter: <name>     (repeat)
     contract-constraint: <text>    (repeat)
+
+  A list or a mapping says so with payload-type, so that one holding nothing is still one.
+  `item` without `payload-type: list`, or `entry` without `payload-type: mapping`, is refused
+  rather than guessed at.
+
+  contract and runtime_reference are available-only, and nothing unavailable carries a payload.
 {END_INFO}
 
 {BEGIN_COMPUTATION} <c-id>

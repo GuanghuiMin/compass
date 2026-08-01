@@ -25,10 +25,9 @@ contract-parameter: password
 END_INFO
 
 INFO i2
-kind: runtime_reference
+kind: result
 available: false
-description: Access token produced by logging in
-runtime-name: example_access_token
+description: A usable access token
 END_INFO
 
 COMPUTATION c1
@@ -74,8 +73,17 @@ def test_a_whole_graph_parses():
 def test_payload_content_survives_exactly():
     g = parsed()
     assert g.node("i1").payload == ContractPayload("apis.example.login", ("username", "password"))
-    assert g.node("i2").payload == RuntimeReferencePayload("example_access_token")
-    assert g.node("i2").available is False
+    assert g.node("i2").kind is InformationKind.RESULT
+    assert g.node("i2").available is False and g.node("i2").payload is None
+
+
+def test_an_established_runtime_reference_parses():
+    text = ("BEGIN_GRAPH\nINFO i1\nkind: runtime_reference\navailable: true\n"
+            "description: the token the agent bound\nruntime-name: example_access_token\n"
+            "END_INFO\nCOMPUTATION c1\ndescription: Use it\nEND_COMPUTATION\n"
+            "EDGE i1 REQUIRES c1\nEND_GRAPH\n")
+    g = parse(text).graph
+    assert g.node("i1").payload == RuntimeReferencePayload("example_access_token")
 
 
 def test_an_empty_graph_parses():
@@ -288,8 +296,7 @@ def test_a_missing_begin_or_end_is_rejected():
 
 
 def test_two_payload_kinds_in_one_block_are_rejected():
-    text = WHOLE.replace("runtime-name: example_access_token",
-                         "runtime-name: example_access_token\nvalue: 7")
+    text = _payload_fixture("runtime-name: a_name\nvalue: 7\n")
     assert "a payload is one kind" in messages(text)
 
 
@@ -413,6 +420,71 @@ def test_only_one_surrounding_fence_pair_is_absorbed():
     assert "is not a known statement" in messages(inside)
     trailing = "```text\n" + WHOLE + "```\n```\n"
     assert not parse(trailing).ok
+
+
+def _payload_fixture(payload_lines):
+    return ("BEGIN_GRAPH\nINFO i1\nkind: result\navailable: true\ndescription: d\n"
+            + payload_lines + "END_INFO\nCOMPUTATION c1\ndescription: d\nEND_COMPUTATION\n"
+            "EDGE i1 REQUIRES c1\nEND_GRAPH\n")
+
+
+def test_an_empty_list_round_trips_as_an_empty_list():
+    """The query succeeded and matched nothing. That is a state, not the absence of one."""
+    g = build(nodes=[ComputationNode(id="c1", description="Do the remaining work"),
+                     InformationNode(id="i1", kind=InformationKind.RESULT, description="no matches",
+                                     available=True, payload=ListPayload(()))],
+              edges=[("i1", Relation.REQUIRES, "c1")])
+    back = parse(to_protocol(g)).graph
+    assert back == g and back.node("i1").payload == ListPayload(())
+
+
+def test_an_empty_mapping_round_trips_as_an_empty_mapping():
+    g = build(nodes=[ComputationNode(id="c1", description="Do the remaining work"),
+                     InformationNode(id="i1", kind=InformationKind.RESULT, description="nothing set",
+                                     available=True, payload=MappingPayload(()))],
+              edges=[("i1", Relation.REQUIRES, "c1")])
+    back = parse(to_protocol(g)).graph
+    assert back == g and back.node("i1").payload == MappingPayload(())
+
+
+def test_items_without_a_declared_list_are_refused_rather_than_guessed():
+    assert "without 'payload-type: list'" in messages(_payload_fixture("item: 1\nitem: 2\n"))
+
+
+def test_entries_without_a_declared_mapping_are_refused():
+    assert "without 'payload-type: mapping'" in messages(_payload_fixture("entry a = 1\n"))
+
+
+@pytest.mark.parametrize("declared,intruder", [
+    ("list", "value: 7"), ("list", "entry a = 1"), ("list", "runtime-name: n"),
+    ("list", "contract-operation: apis.a.b"),
+    ("mapping", "value: 7"), ("mapping", "item: 1"), ("mapping", "runtime-name: n"),
+])
+def test_a_declared_payload_refuses_fields_of_another_kind(declared, intruder):
+    text = _payload_fixture(f"payload-type: {declared}\n{intruder}\n")
+    assert "and also gives" in messages(text)
+
+
+def test_an_unknown_payload_type_is_rejected():
+    assert "payload-type reads list or mapping" in messages(
+        _payload_fixture("payload-type: bag\nitem: 1\n"))
+
+
+def test_payload_type_is_a_singleton():
+    assert "'payload-type' is given twice" in messages(
+        _payload_fixture("payload-type: list\npayload-type: mapping\n"))
+
+
+@pytest.mark.parametrize("written", ["entry a = 1", "entry a=1", "entry a =1", "entry a= 1",
+                                     "entry  a  =  1"])
+def test_pair_spacing_variants_parse_and_are_logged(written):
+    outcome = parse(_payload_fixture(f"payload-type: mapping\n{written}\n"))
+    assert outcome.ok, outcome.errors
+    assert outcome.graph.node("i1").payload == MappingPayload((("a", 1),))
+    if written != "entry a = 1":
+        assert any("pair separator spacing" in n for n in outcome.normalizations)
+    else:
+        assert not any("pair separator spacing" in n for n in outcome.normalizations)
 
 
 @pytest.mark.parametrize("written", ["value: 7", "value:7", "value : 7", "value  :  7"])

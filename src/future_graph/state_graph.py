@@ -87,8 +87,11 @@ class StateGraph:
 
     @property
     def edges(self) -> tuple[Edge, ...]:
+        # _safe_order, because an edge may name an id of any shape and sorting must not be the thing
+        # that raises: a dangling endpoint has to reach validate() as a violation.
         return tuple(sorted((Edge(u, d["relation"], v) for u, v, d in self._g.edges(data=True)),
-                            key=lambda e: (e.relation.value, _order(e.source), _order(e.target))))
+                            key=lambda e: (e.relation.value, _safe_order(e.source),
+                                           _safe_order(e.target))))
 
     def edges_of(self, relation: Relation) -> tuple[Edge, ...]:
         return tuple(e for e in self.edges if e.relation is relation)
@@ -96,28 +99,28 @@ class StateGraph:
     def requires_of(self, computation_id: str) -> tuple[str, ...]:
         """Information nodes this computation requires."""
         return tuple(sorted((u for u, _, d in self._g.in_edges(computation_id, data=True)
-                             if d["relation"] is Relation.REQUIRES), key=_order))
+                             if d["relation"] is Relation.REQUIRES), key=_safe_order))
 
     def produces_of(self, computation_id: str) -> tuple[str, ...]:
         return tuple(sorted((v for _, v, d in self._g.out_edges(computation_id, data=True)
-                             if d["relation"] is Relation.PRODUCES), key=_order))
+                             if d["relation"] is Relation.PRODUCES), key=_safe_order))
 
     def consumers_of(self, information_id: str) -> tuple[str, ...]:
         """Computations that require this information. Emptiness here is what makes it dead."""
         return tuple(sorted((v for _, v, d in self._g.out_edges(information_id, data=True)
-                             if d["relation"] is Relation.REQUIRES), key=_order))
+                             if d["relation"] is Relation.REQUIRES), key=_safe_order))
 
     def producers_of(self, information_id: str) -> tuple[str, ...]:
         return tuple(sorted((u for u, _, d in self._g.in_edges(information_id, data=True)
-                             if d["relation"] is Relation.PRODUCES), key=_order))
+                             if d["relation"] is Relation.PRODUCES), key=_safe_order))
 
     def predecessors_of(self, computation_id: str) -> tuple[str, ...]:
         return tuple(sorted((u for u, _, d in self._g.in_edges(computation_id, data=True)
-                             if d["relation"] is Relation.PRECEDES), key=_order))
+                             if d["relation"] is Relation.PRECEDES), key=_safe_order))
 
     def successors_of(self, computation_id: str) -> tuple[str, ...]:
         return tuple(sorted((v for _, v, d in self._g.out_edges(computation_id, data=True)
-                             if d["relation"] is Relation.PRECEDES), key=_order))
+                             if d["relation"] is Relation.PRECEDES), key=_safe_order))
 
     def remove(self, node_id: str) -> None:
         self._g.remove_node(node_id)
@@ -141,17 +144,26 @@ class StateGraph:
 
     @classmethod
     def from_snapshot(cls, snapshot: dict) -> "StateGraph":
+        """Load a snapshot, refusing anything it does not recognise.
+
+        A loader that reads a missing section as empty and `"false"` as true turns a damaged artifact
+        into a plausible graph, and a replay built on plausible graphs measures nothing. Structure is
+        checked here; whether the graph holds together is still validation's question.
+        """
+        _exact_keys(snapshot, {"computations", "information", "edges"}, "snapshot")
         graph = cls()
-        for raw in snapshot.get("computations") or []:
+        for raw in _sequence(snapshot["computations"], "snapshot.computations"):
             graph.add(_computation_from_dict(raw))
-        for raw in snapshot.get("information") or []:
+        for raw in _sequence(snapshot["information"], "snapshot.information"):
             graph.add(_information_from_dict(raw))
-        for raw in snapshot.get("edges") or []:
+        for raw in _sequence(snapshot["edges"], "snapshot.edges"):
+            _exact_keys(raw, {"source", "relation", "target"}, "snapshot.edges entry")
             try:
                 relation = Relation(raw["relation"])
-            except (KeyError, ValueError) as err:
-                raise SchemaError(f"unknown relation in snapshot: {raw!r}") from err
-            graph.add_edge(raw["source"], relation, raw["target"])
+            except ValueError as err:
+                raise SchemaError(f"unknown relation in snapshot: {raw['relation']!r}") from err
+            graph.add_edge(_text(raw["source"], "edge source"),
+                           relation, _text(raw["target"], "edge target"))
         return graph
 
     def __eq__(self, other: object) -> bool:
@@ -183,6 +195,38 @@ def build(nodes: Iterable[Node] = (), edges: Iterable[tuple[str, Relation, str]]
     return graph
 
 
+# --------------------------------------------------------------------------- reading artifacts
+
+def _exact_keys(raw: object, expected: set[str], where: str) -> None:
+    if not isinstance(raw, dict):
+        raise SchemaError(f"{where}: expected an object, got {type(raw).__name__}")
+    missing = sorted(expected - set(raw))
+    unknown = sorted(set(raw) - expected)
+    if missing:
+        raise SchemaError(f"{where}: missing {', '.join(missing)}")
+    if unknown:
+        raise SchemaError(f"{where}: unknown {', '.join(unknown)}")
+
+
+def _sequence(raw: object, where: str) -> list:
+    if not isinstance(raw, list):
+        raise SchemaError(f"{where}: expected a list, got {type(raw).__name__}")
+    return raw
+
+
+def _text(raw: object, where: str) -> str:
+    if not isinstance(raw, str):
+        raise SchemaError(f"{where}: expected text, got {type(raw).__name__}")
+    return raw
+
+
+def _boolean(raw: object, where: str) -> bool:
+    """No coercion. `"false"` is a string, and reading it as True is how an artifact starts lying."""
+    if not isinstance(raw, bool):
+        raise SchemaError(f"{where}: expected true or false, got {raw!r}")
+    return raw
+
+
 # --------------------------------------------------------------------------- serialization
 
 def _argument_to_dict(value) -> dict:
@@ -191,10 +235,13 @@ def _argument_to_dict(value) -> dict:
     return {"literal": value}
 
 
-def _argument_from_dict(raw: dict):
+def _argument_from_dict(raw: dict, where: str):
+    if not isinstance(raw, dict) or set(raw) not in ({"reference"}, {"literal"}):
+        raise SchemaError(f"{where}: an argument is exactly one of "
+                          "{'literal': ...} or {'reference': ...}")
     if "reference" in raw:
-        return InformationReference(raw["reference"])
-    return raw.get("literal")
+        return InformationReference(_text(raw["reference"], f"{where} reference"))
+    return raw["literal"]
 
 
 def _computation_to_dict(node: ComputationNode) -> dict:
@@ -207,9 +254,19 @@ def _computation_to_dict(node: ComputationNode) -> dict:
 
 
 def _computation_from_dict(raw: dict) -> ComputationNode:
+    _exact_keys(raw, {"id", "description", "operation", "arguments"}, "a computation")
+    where = f"computation {raw['id']!r}"
+    if not isinstance(raw["arguments"], dict):
+        raise SchemaError(f"{where}: arguments must be an object")
+    operation = raw["operation"]
+    if operation is not None:
+        operation = _text(operation, f"{where} operation")
     return ComputationNode(
-        id=raw["id"], description=raw["description"], operation=raw.get("operation"),
-        arguments={k: _argument_from_dict(v) for k, v in (raw.get("arguments") or {}).items()},
+        id=_text(raw["id"], "a computation id"),
+        description=_text(raw["description"], f"{where} description"),
+        operation=operation,
+        arguments={k: _argument_from_dict(v, f"{where} argument {k!r}")
+                   for k, v in raw["arguments"].items()},
     )
 
 
@@ -237,22 +294,40 @@ def _payload_to_dict(payload) -> dict | None:
     return {"type": tag, **body}
 
 
+_PAYLOAD_KEYS = {
+    "scalar": {"type", "value"},
+    "list": {"type", "values"},
+    "mapping": {"type", "values"},
+    "runtime_reference": {"type", "name"},
+    "contract": {"type", "operation", "parameters", "constraints"},
+}
+
+
 def _payload_from_dict(raw: dict | None):
     if raw is None:
         return None
-    tag = raw.get("type")
+    if not isinstance(raw, dict) or "type" not in raw:
+        raise SchemaError("a payload is an object with a type")
+    tag = raw["type"]
+    if tag not in _PAYLOAD_KEYS:
+        raise SchemaError(f"unknown payload type {tag!r}")
+    _exact_keys(raw, _PAYLOAD_KEYS[tag], f"a {tag} payload")
     if tag == "scalar":
         return ScalarPayload(raw["value"])
     if tag == "list":
-        return ListPayload(tuple(raw["values"]))
+        return ListPayload(tuple(_sequence(raw["values"], "a list payload")))
     if tag == "mapping":
-        return MappingPayload(tuple((k, v) for k, v in raw["values"]))
+        pairs = []
+        for pair in _sequence(raw["values"], "a mapping payload"):
+            if not isinstance(pair, list) or len(pair) != 2:
+                raise SchemaError(f"a mapping payload entry is a pair, got {pair!r}")
+            pairs.append((pair[0], pair[1]))
+        return MappingPayload(tuple(pairs))
     if tag == "runtime_reference":
-        return RuntimeReferencePayload(raw["name"])
-    if tag == "contract":
-        return ContractPayload(raw["operation"], tuple(raw.get("parameters") or ()),
-                               tuple(raw.get("constraints") or ()))
-    raise SchemaError(f"unknown payload type {tag!r}")
+        return RuntimeReferencePayload(_text(raw["name"], "a runtime reference name"))
+    return ContractPayload(_text(raw["operation"], "a contract operation"),
+                           tuple(_sequence(raw["parameters"], "contract parameters")),
+                           tuple(_sequence(raw["constraints"], "contract constraints")))
 
 
 def _information_to_dict(node: InformationNode) -> dict:
@@ -261,10 +336,13 @@ def _information_to_dict(node: InformationNode) -> dict:
 
 
 def _information_from_dict(raw: dict) -> InformationNode:
+    _exact_keys(raw, {"id", "kind", "description", "available", "payload"}, "an information node")
+    where = f"information {raw['id']!r}"
     try:
         kind = InformationKind(raw["kind"])
-    except (KeyError, ValueError) as err:
-        raise SchemaError(f"unknown information kind in snapshot: {raw.get('kind')!r}") from err
-    return InformationNode(id=raw["id"], kind=kind, description=raw["description"],
-                           available=bool(raw["available"]),
-                           payload=_payload_from_dict(raw.get("payload")))
+    except ValueError as err:
+        raise SchemaError(f"unknown information kind in snapshot: {raw['kind']!r}") from err
+    return InformationNode(id=_text(raw["id"], "an information id"), kind=kind,
+                           description=_text(raw["description"], f"{where} description"),
+                           available=_boolean(raw["available"], f"{where} available"),
+                           payload=_payload_from_dict(raw["payload"]))

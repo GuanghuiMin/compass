@@ -18,8 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .protocol import (
-    BEGIN_COMPUTATION, BEGIN_GRAPH, BEGIN_INFO, COMPUTATION_FIELDS, END_COMPUTATION, END_GRAPH,
-    END_INFO, EDGE, INFORMATION_FIELDS,
+    BEGIN_COMPUTATION, BEGIN_GRAPH, BEGIN_INFO, COMPUTATION_FIELDS, DECLARED_PAYLOADS,
+    END_COMPUTATION, END_GRAPH, END_INFO, EDGE, INFORMATION_FIELDS,
 )
 from .schema import (
     ComputationNode, ContractPayload, InformationKind, InformationNode, InformationReference,
@@ -30,8 +30,8 @@ from .state_graph import StateGraph
 STRUCTURAL_WORDS = frozenset({BEGIN_GRAPH, END_GRAPH, BEGIN_INFO, END_INFO, BEGIN_COMPUTATION,
                               END_COMPUTATION, EDGE} | {r.name for r in Relation})
 
-SINGLETON_FIELDS = frozenset({"kind", "available", "description", "operation", "value",
-                              "runtime-name", "contract-operation"})
+SINGLETON_FIELDS = frozenset({"kind", "available", "description", "operation", "payload-type",
+                              "value", "runtime-name", "contract-operation"})
 
 NORMALIZATIONS = (
     "markdown fence",
@@ -40,6 +40,7 @@ NORMALIZATIONS = (
     "structural keyword case",
     "field name case",
     "field separator spacing",
+    "pair separator spacing",
     "scalar quotes",
     "trailing whitespace",
 )
@@ -305,6 +306,8 @@ def _read_pair(block: _Block, name: str, text: str, number: int, reader: _Reader
     if not key or not value:
         reader.fail(number, f"{name} reads '{name} <name> = <value>', got {text!r}")
         return
+    if body != f"{key} = {value}":
+        reader.note("pair separator spacing", number, text[:20])
     target = block.entries if name == "entry" else block.arguments
     if any(existing == key for existing, _, _ in target):
         reader.fail(number, f"{name} {key!r} is given twice in {block.node_id}")
@@ -435,6 +438,7 @@ _FAILED = object()
 
 
 def _payload(block: _Block, reader: _Reader):
+    """One payload per block, and a list or mapping only when the block says which it is."""
     families = {
         "value": "value" in block.singles,
         "item": bool(block.items),
@@ -443,7 +447,17 @@ def _payload(block: _Block, reader: _Reader):
         "contract": "contract-operation" in block.singles or bool(block.parameters)
                     or bool(block.constraints),
     }
+    declared = block.singles.get("payload-type")
     present = [name for name, yes in families.items() if yes]
+
+    if declared is not None:
+        return _declared_payload(block, reader, declared, present)
+    if "item" in present or "entry" in present:
+        wanted = "list" if "item" in present else "mapping"
+        reader.fail(block.line,
+                    f"{block.node_id} has {'item' if wanted == 'list' else 'entry'} lines without "
+                    f"'payload-type: {wanted}'; nothing here decides that for you")
+        return _FAILED
     if not present:
         return None
     if len(present) > 1:
@@ -454,11 +468,6 @@ def _payload(block: _Block, reader: _Reader):
         if present == ["value"]:
             text, line = block.singles["value"]
             return ScalarPayload(_scalar(text, reader, line))
-        if present == ["item"]:
-            return ListPayload(tuple(_scalar(v, reader, block.line) for v in block.items))
-        if present == ["entry"]:
-            return MappingPayload(tuple((k, _scalar(v, reader, line)) for k, v, line
-                                        in block.entries))
         if present == ["runtime-name"]:
             return RuntimeReferencePayload(block.singles["runtime-name"][0])
         if "contract-operation" not in block.singles:
@@ -467,6 +476,27 @@ def _payload(block: _Block, reader: _Reader):
             return _FAILED
         return ContractPayload(block.singles["contract-operation"][0],
                                tuple(block.parameters), tuple(block.constraints))
+    except SchemaError as err:
+        reader.fail(block.line, str(err))
+        return _FAILED
+
+
+def _declared_payload(block: _Block, reader: _Reader, declared: tuple[str, int],
+                      present: list[str]):
+    text, line = declared
+    if text not in DECLARED_PAYLOADS:
+        reader.fail(line, f"payload-type reads {' or '.join(DECLARED_PAYLOADS)}, got {text!r}")
+        return _FAILED
+    wanted = "item" if text == "list" else "entry"
+    intruders = sorted(set(present) - {wanted})
+    if intruders:
+        reader.fail(block.line, f"{block.node_id} declares a {text} and also gives "
+                                f"{' and '.join(intruders)}")
+        return _FAILED
+    try:
+        if text == "list":
+            return ListPayload(tuple(_scalar(v, reader, block.line) for v in block.items))
+        return MappingPayload(tuple((k, _scalar(v, reader, line)) for k, v, line in block.entries))
     except SchemaError as err:
         reader.fail(block.line, str(err))
         return _FAILED

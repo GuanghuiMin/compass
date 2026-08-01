@@ -90,7 +90,7 @@ def test_a_runtime_reference_stores_a_name_not_a_value():
                 description="Venmo access token bound by the agent",
                 payload=RuntimeReferencePayload("venmo_access_token"))
     assert node.payload.name == "venmo_access_token"
-    with pytest.raises(SchemaError, match="carries a name"):
+    with pytest.raises(SchemaError, match="carries a RuntimeReferencePayload"):
         info(iid="i3", kind=InformationKind.RUNTIME_REFERENCE, description="d",
              payload=ScalarPayload("eyJhbGciOiJIUzI1NiJ9"))
 
@@ -105,9 +105,93 @@ def test_a_contract_keeps_the_exact_operation_and_parameter_names():
 
 
 def test_a_contract_node_will_not_take_some_other_payload():
-    with pytest.raises(SchemaError, match="carries an interface"):
+    with pytest.raises(SchemaError, match="carries a ContractPayload"):
         info(iid="i5", kind=InformationKind.CONTRACT, description="d",
              payload=ScalarPayload("apis.venmo.login"))
+
+
+# --------------------------------------------------------------------------- kind and payload
+
+@pytest.mark.parametrize("kind,payload", [
+    (InformationKind.CONTRACT, ContractPayload("apis.a.b", ("x",))),
+    (InformationKind.RUNTIME_REFERENCE, RuntimeReferencePayload("some_name")),
+    (InformationKind.FACT, ScalarPayload(7)),
+    (InformationKind.RESULT, ListPayload((1, 2))),
+    (InformationKind.CONSTRAINT, MappingPayload((("limit", 5),))),
+    (InformationKind.FAILURE_CONSEQUENCE, None),
+])
+def test_legal_available_pairings_load(kind, payload):
+    assert info(kind=kind, available=True, payload=payload)
+
+
+@pytest.mark.parametrize("kind", [InformationKind.CONTRACT, InformationKind.RUNTIME_REFERENCE])
+def test_an_available_typed_kind_must_carry_its_payload(kind):
+    with pytest.raises(SchemaError, match="carries a"):
+        info(kind=kind, available=True, payload=None)
+
+
+@pytest.mark.parametrize("kind", [InformationKind.CONTRACT, InformationKind.RUNTIME_REFERENCE])
+def test_contract_and_runtime_reference_cannot_be_unavailable(kind):
+    """What a computation will establish is a result until it is established."""
+    with pytest.raises(SchemaError, match="cannot be unavailable"):
+        info(kind=kind, available=False, payload=None)
+
+
+@pytest.mark.parametrize("kind", [InformationKind.FACT, InformationKind.RESULT,
+                                  InformationKind.CONSTRAINT,
+                                  InformationKind.FAILURE_CONSEQUENCE])
+def test_a_typed_payload_may_not_sit_on_an_untyped_kind(kind):
+    with pytest.raises(SchemaError, match="belongs to contract"):
+        info(kind=kind, available=True, payload=ContractPayload("apis.a.b"))
+    with pytest.raises(SchemaError, match="belongs to runtime_reference"):
+        info(kind=kind, available=True, payload=RuntimeReferencePayload("n"))
+
+
+@pytest.mark.parametrize("payload", [ScalarPayload(1), ListPayload((1,)),
+                                     MappingPayload((("a", 1),))])
+def test_unavailable_information_carries_no_payload(payload):
+    with pytest.raises(SchemaError, match="has no payload"):
+        info(kind=InformationKind.RESULT, available=False, payload=payload)
+
+
+def test_unavailable_information_without_a_payload_is_the_way_to_say_it_is_coming():
+    node = info(kind=InformationKind.RESULT, available=False, payload=None,
+                description="a usable access token")
+    assert node.available is False and node.payload is None
+
+
+# --------------------------------------------------------------------------- single-line text
+
+@pytest.mark.parametrize("text", ["two\nlines", "carriage\rreturn"])
+def test_multi_line_text_is_rejected_everywhere_the_protocol_must_carry_it(text):
+    with pytest.raises(SchemaError, match="more than one line"):
+        info(description=text)
+    with pytest.raises(SchemaError, match="more than one line"):
+        comp(description=text)
+    with pytest.raises(SchemaError, match="more than one line"):
+        comp(operation=text)
+    with pytest.raises(SchemaError, match="more than one line"):
+        ScalarPayload(text)
+    with pytest.raises(SchemaError, match="more than one line"):
+        RuntimeReferencePayload(text)
+    with pytest.raises(SchemaError, match="more than one line"):
+        ContractPayload(text)
+    with pytest.raises(SchemaError, match="more than one line"):
+        ContractPayload("apis.a.b", (text,))
+
+
+def test_an_argument_name_may_not_contain_an_equals_sign_or_a_line_break():
+    with pytest.raises(SchemaError, match="separates a name from its value"):
+        comp(arguments={"a=b": 1})
+    with pytest.raises(SchemaError, match="more than one line"):
+        comp(arguments={"a\nb": 1})
+
+
+def test_a_mapping_key_may_not_contain_an_equals_sign_or_a_line_break():
+    with pytest.raises(SchemaError, match="separates a name from its value"):
+        MappingPayload((("a=b", 1),))
+    with pytest.raises(SchemaError, match="more than one line"):
+        MappingPayload((("a\nb", 1),))
 
 
 def test_a_duplicate_mapping_key_is_rejected():
@@ -186,8 +270,8 @@ def test_a_snapshot_round_trips_exactly():
                     arguments={"username": "a@b.c", "token": InformationReference("i2")}),
                info("i1", kind=InformationKind.CONTRACT, description="Venmo login",
                     payload=ContractPayload("apis.venmo.login", ("username",))),
-               info("i2", kind=InformationKind.RUNTIME_REFERENCE, description="token",
-                    available=False, payload=RuntimeReferencePayload("venmo_access_token"))],
+               info("i2", kind=InformationKind.RESULT, description="a usable access token",
+                    available=False)],
         edges=[("i1", Relation.REQUIRES, "c1"), ("c1", Relation.PRODUCES, "i2")],
     )
     snapshot = g.to_snapshot()
@@ -216,12 +300,106 @@ def test_every_payload_kind_survives_the_round_trip():
     assert StateGraph.from_snapshot(g.to_snapshot()) == g
 
 
+def snapshot(**overrides):
+    base = {
+        "computations": [{"id": "c1", "description": "d", "operation": None, "arguments": {}}],
+        "information": [{"id": "i1", "kind": "fact", "description": "d", "available": True,
+                         "payload": None}],
+        "edges": [{"source": "i1", "relation": "requires", "target": "c1"}],
+    }
+    base.update(overrides)
+    return base
+
+
 def test_a_snapshot_with_an_unknown_relation_is_rejected():
     with pytest.raises(SchemaError, match="unknown relation"):
-        StateGraph.from_snapshot({"computations": [{"id": "c1", "description": "d"}],
-                                  "information": [],
-                                  "edges": [{"source": "c1", "relation": "refines",
-                                             "target": "c1"}]})
+        StateGraph.from_snapshot(snapshot(edges=[{"source": "i1", "relation": "refines",
+                                                  "target": "c1"}]))
+
+
+def test_a_well_formed_snapshot_loads():
+    assert len(StateGraph.from_snapshot(snapshot())) == 2
+
+
+@pytest.mark.parametrize("section", ["computations", "information", "edges"])
+def test_a_missing_section_raises_rather_than_reading_as_empty(section):
+    payload = snapshot()
+    del payload[section]
+    with pytest.raises(SchemaError, match=f"missing {section}"):
+        StateGraph.from_snapshot(payload)
+
+
+def test_an_unknown_top_level_key_is_rejected():
+    with pytest.raises(SchemaError, match="unknown notes"):
+        StateGraph.from_snapshot(snapshot(notes="anything"))
+
+
+@pytest.mark.parametrize("section", ["computations", "information", "edges"])
+def test_a_section_that_is_not_a_list_is_rejected(section):
+    with pytest.raises(SchemaError, match="expected a list"):
+        StateGraph.from_snapshot(snapshot(**{section: {"id": "c1"}}))
+
+
+def test_available_as_the_string_false_is_rejected_rather_than_read_as_true():
+    """bool("false") is True, and that is how an artifact starts lying."""
+    with pytest.raises(SchemaError, match="expected true or false"):
+        StateGraph.from_snapshot(snapshot(information=[
+            {"id": "i1", "kind": "fact", "description": "d", "available": "false",
+             "payload": None}]))
+
+
+def test_a_node_missing_a_key_is_rejected():
+    with pytest.raises(SchemaError, match="missing operation"):
+        StateGraph.from_snapshot(snapshot(computations=[{"id": "c1", "description": "d",
+                                                         "arguments": {}}]))
+
+
+def test_a_node_with_an_unknown_key_is_rejected():
+    with pytest.raises(SchemaError, match="unknown status"):
+        StateGraph.from_snapshot(snapshot(computations=[
+            {"id": "c1", "description": "d", "operation": None, "arguments": {},
+             "status": "pending"}]))
+
+
+@pytest.mark.parametrize("argument", [
+    {"literal": 1, "reference": "i1"}, {}, {"value": 1}, "i1", None,
+])
+def test_a_malformed_argument_encoding_is_rejected(argument):
+    with pytest.raises(SchemaError, match="exactly one of"):
+        StateGraph.from_snapshot(snapshot(computations=[
+            {"id": "c1", "description": "d", "operation": None, "arguments": {"a": argument}}]))
+
+
+def test_a_payload_with_an_unknown_type_is_rejected():
+    with pytest.raises(SchemaError, match="unknown payload type"):
+        StateGraph.from_snapshot(snapshot(information=[
+            {"id": "i1", "kind": "fact", "description": "d", "available": True,
+             "payload": {"type": "blob", "value": 1}}]))
+
+
+def test_a_payload_missing_a_key_is_rejected():
+    with pytest.raises(SchemaError, match="missing constraints"):
+        StateGraph.from_snapshot(snapshot(information=[
+            {"id": "i1", "kind": "contract", "description": "d", "available": True,
+             "payload": {"type": "contract", "operation": "apis.a.b", "parameters": []}}]))
+
+
+def test_a_mapping_entry_that_is_not_a_pair_is_rejected():
+    with pytest.raises(SchemaError, match="is a pair"):
+        StateGraph.from_snapshot(snapshot(information=[
+            {"id": "i1", "kind": "fact", "description": "d", "available": True,
+             "payload": {"type": "mapping", "values": [["a", 1, 2]]}}]))
+
+
+def test_the_loader_leaves_graph_semantics_to_validation():
+    """A snapshot with a cycle loads; saying it does not hold together is validate()'s job."""
+    loaded = StateGraph.from_snapshot(snapshot(
+        computations=[{"id": "c1", "description": "d", "operation": None, "arguments": {}},
+                      {"id": "c2", "description": "d", "operation": None, "arguments": {}}],
+        information=[],
+        edges=[{"source": "c1", "relation": "precedes", "target": "c2"},
+               {"source": "c2", "relation": "precedes", "target": "c1"}]))
+    assert len(loaded) == 2
 
 
 def test_the_graph_carries_no_state_beside_itself():
