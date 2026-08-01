@@ -42,6 +42,11 @@ class StateGraph:
         self._g.add_node(node.id, entity_type=entity_type(node), payload=node)
 
     def add_edge(self, source: str, relation: Relation, target: str) -> None:
+        """An edge to an id that does not exist is kept, not refused.
+
+        networkx would silently invent the endpoint. Inventing it and reporting it as dangling is what
+        lets validation collect every fault in one pass instead of dying on the first one.
+        """
         if not isinstance(relation, Relation):
             raise SchemaError(f"{relation!r} is not a known relation")
         self._g.add_edge(source, target, key=relation.value, relation=relation)
@@ -54,24 +59,31 @@ class StateGraph:
         return self._g.number_of_nodes()
 
     def node(self, node_id: str) -> Node:
-        if node_id not in self._g:
+        if node_id not in self._g or "payload" not in self._g.nodes[node_id]:
             raise KeyError(node_id)
         return self._g.nodes[node_id]["payload"]
 
-    def kind_of(self, node_id: str) -> EntityType:
-        return self._g.nodes[node_id]["entity_type"]
+    def kind_of(self, node_id: str) -> EntityType | None:
+        """The type of a declared node, or None for an id only an edge mentions."""
+        return self._g.nodes[node_id].get("entity_type") if node_id in self._g else None
 
     @property
     def computations(self) -> tuple[ComputationNode, ...]:
         return tuple(sorted((n["payload"] for _, n in self._g.nodes(data=True)
-                             if n["entity_type"] is EntityType.COMPUTATION),
+                             if n.get("entity_type") is EntityType.COMPUTATION),
                             key=lambda c: _order(c.id)))
 
     @property
     def information(self) -> tuple[InformationNode, ...]:
         return tuple(sorted((n["payload"] for _, n in self._g.nodes(data=True)
-                             if n["entity_type"] is EntityType.INFORMATION),
+                             if n.get("entity_type") is EntityType.INFORMATION),
                             key=lambda i: _order(i.id)))
+
+    @property
+    def dangling_ids(self) -> tuple[str, ...]:
+        """Ids an edge points at that no node declares."""
+        return tuple(sorted((nid for nid, data in self._g.nodes(data=True)
+                             if "payload" not in data), key=_safe_order))
 
     @property
     def edges(self) -> tuple[Edge, ...]:
@@ -152,6 +164,14 @@ class StateGraph:
 def _order(node_id: str) -> tuple[str, int]:
     """Sort c2 before c10, and keep computations and information apart."""
     return node_id[0], int(node_id[1:])
+
+
+def _safe_order(node_id: str) -> tuple[str, int]:
+    """Ordering for ids that may be malformed, since a dangling id can be anything."""
+    try:
+        return _order(node_id)
+    except (ValueError, IndexError):
+        return node_id, -1
 
 
 def build(nodes: Iterable[Node] = (), edges: Iterable[tuple[str, Relation, str]] = ()) -> StateGraph:
