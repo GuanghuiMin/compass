@@ -85,12 +85,18 @@ def _computation_block(node: ComputationNode) -> list[str]:
 
 
 def _scalar_out(value) -> str:
+    """Write a scalar so that reading it back gives the same value, and the same type.
+
+    Every string is quoted, without exception. Quoting only the awkward-looking ones means `"true"`
+    comes back as a boolean, `"7"` as an integer and `"@i3"` as a reference to a node, and a serializer
+    that changes types is worse than one that is verbose.
+    """
     if value is None:
         return "null"
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
-        return f'"{value}"' if value.strip() != value or not value else value
+        return f'"{value}"'
     return str(value)
 
 

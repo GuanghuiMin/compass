@@ -105,6 +105,53 @@ def test_every_payload_kind_round_trips(payload):
     assert parse(to_protocol(g)).graph == g
 
 
+RESERVED_LOOKING = ["true", "false", "null", "7", "50.5", "-3", "@i3", "@", "@iX",
+                    "", "  padded  ", "1e5", "0", "yes"]
+
+
+@pytest.mark.parametrize("literal", RESERVED_LOOKING)
+def test_a_string_that_looks_like_something_else_round_trips_as_a_string(literal):
+    """Quoting only the awkward-looking values is how "true" comes back as a boolean."""
+    g = build(nodes=[ComputationNode(id="c1", description="Do the remaining work"),
+                     InformationNode(id="i1", kind=InformationKind.FACT, description="A known thing",
+                                     available=True, payload=ScalarPayload(literal))],
+              edges=[("i1", Relation.REQUIRES, "c1")])
+    back = parse(to_protocol(g)).graph
+    assert back == g
+    assert back.node("i1").payload.value == literal
+
+
+@pytest.mark.parametrize("literal", RESERVED_LOOKING)
+def test_an_argument_string_that_looks_like_something_else_round_trips(literal):
+    g = build(nodes=[ComputationNode(id="c1", description="Do the remaining work",
+                                     arguments={"a": literal})])
+    back = parse(to_protocol(g)).graph
+    assert back == g
+    assert back.node("c1").arguments["a"] == literal
+
+
+def test_a_literal_at_string_and_a_reference_stay_apart_through_a_round_trip():
+    g = build(nodes=[ComputationNode(id="c1", description="Do the remaining work",
+                                     arguments={"text": "@i1", "ref": InformationReference("i1")}),
+                     InformationNode(id="i1", kind=InformationKind.FACT, description="A known thing",
+                                     available=True)],
+              edges=[("i1", Relation.REQUIRES, "c1")])
+    back = parse(to_protocol(g)).graph
+    assert back.node("c1").arguments["text"] == "@i1"
+    assert back.node("c1").arguments["ref"] == InformationReference("i1")
+
+
+@pytest.mark.parametrize("literal", RESERVED_LOOKING)
+def test_list_and_mapping_payloads_keep_string_types_too(literal):
+    g = build(nodes=[ComputationNode(id="c1", description="Do the remaining work"),
+                     InformationNode(id="i1", kind=InformationKind.FACT, description="A list",
+                                     available=True, payload=ListPayload((literal,))),
+                     InformationNode(id="i2", kind=InformationKind.FACT, description="A mapping",
+                                     available=True, payload=MappingPayload((("k", literal),)))],
+              edges=[("i1", Relation.REQUIRES, "c1"), ("i2", Relation.REQUIRES, "c1")])
+    assert parse(to_protocol(g)).graph == g
+
+
 def test_serialization_is_canonical_regardless_of_insertion_order():
     a = build(nodes=[ComputationNode(id="c1", description="First"),
                      ComputationNode(id="c2", description="Second")],
@@ -313,6 +360,75 @@ def test_errors_carry_a_line_number():
     outcome = parse(WHOLE.replace("kind: contract", "kind: memory"))
     assert outcome.errors[0].line > 0
     assert "line" in str(outcome.errors[0])
+
+
+@pytest.mark.parametrize("written", ["@", "@i", "@iX", "@c1", "@ i3", "@i3x", "@1"])
+def test_a_malformed_reference_is_an_error_and_never_an_exception(written):
+    text = ("BEGIN_GRAPH\nCOMPUTATION c1\ndescription: d\nargument a = " + written +
+            "\nEND_COMPUTATION\nEND_GRAPH\n")
+    outcome = parse(text)          # must not raise
+    assert outcome.graph is None and outcome.errors
+    assert "is not a reference" in " ".join(e.message for e in outcome.errors)
+
+
+def test_both_a_bad_kind_and_a_bad_available_in_one_block_are_reported():
+    text = ("BEGIN_GRAPH\nINFO i1\nkind: memory\navailable: perhaps\ndescription: d\n"
+            "END_INFO\nEND_GRAPH\n")
+    reported = messages(text)
+    assert "is not an information kind" in reported
+    assert "available reads true or false" in reported
+
+
+@pytest.mark.parametrize("line", ["BEGIN_GRAPH extra", "END_GRAPH extra"])
+def test_graph_delimiters_reject_extra_words(line):
+    keyword = line.split()[0]
+    assert "takes 1 word" in messages(WHOLE.replace(keyword + "\n", line + "\n"))
+
+
+@pytest.mark.parametrize("line", ["END_INFO now", "END_COMPUTATION please"])
+def test_block_terminators_reject_extra_words(line):
+    keyword = line.split()[0]
+    assert "takes 1 word" in messages(WHOLE.replace(keyword + "\n", line + "\n", 1))
+
+
+def test_a_block_header_with_extra_words_is_rejected_and_builds_no_node():
+    outcome = parse(WHOLE.replace("INFO i1", "INFO i1 contract"))
+    assert outcome.graph is None
+    assert "takes 2 words" in " ".join(e.message for e in outcome.errors)
+
+
+def test_a_second_end_graph_is_rejected():
+    assert "a second END_GRAPH" in messages(WHOLE + "END_GRAPH\n")
+
+
+def test_a_second_begin_graph_is_rejected():
+    assert "a second BEGIN_GRAPH" in messages(WHOLE.replace("BEGIN_GRAPH\n",
+                                                            "BEGIN_GRAPH\nBEGIN_GRAPH\n"))
+
+
+def test_only_one_surrounding_fence_pair_is_absorbed():
+    fenced = "```text\n" + WHOLE + "```\n"
+    assert parse(fenced).ok
+    inside = WHOLE.replace("EDGE i1 REQUIRES c1", "```\nEDGE i1 REQUIRES c1")
+    assert "is not a known statement" in messages(inside)
+    trailing = "```text\n" + WHOLE + "```\n```\n"
+    assert not parse(trailing).ok
+
+
+@pytest.mark.parametrize("written", ["value: 7", "value:7", "value : 7", "value  :  7"])
+def test_the_approved_colon_spacings_all_parse(written):
+    text = ("BEGIN_GRAPH\nINFO i1\nkind: fact\navailable: true\ndescription: d\n" + written +
+            "\nEND_INFO\nCOMPUTATION c1\ndescription: d\nEND_COMPUTATION\n"
+            "EDGE i1 REQUIRES c1\nEND_GRAPH\n")
+    outcome = parse(text)
+    assert outcome.ok, outcome.errors
+    assert outcome.graph.node("i1").payload == ScalarPayload(7)
+    if written != "value: 7":
+        assert any("field separator spacing" in n for n in outcome.normalizations)
+
+
+def test_canonical_spacing_is_not_logged_as_a_normalization():
+    assert not any("field separator spacing" in n for n in parse(WHOLE).normalizations)
 
 
 def test_the_grammar_describes_exactly_what_the_parser_accepts():
