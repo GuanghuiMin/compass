@@ -728,7 +728,36 @@ When review identifies an unauthorized change:
 
 ---
 
-# 22. Core behavioral principle
+# 22. One implementation, upgraded in place
+
+The repository has one current implementation.
+
+An approved method revision replaces the previous implementation rather than being added beside it.
+Superseded code, prompts, schemas, configuration paths, tests, and compatibility logic are deleted in
+the same change once the new implementation is accepted.
+
+Historical implementations remain recoverable through Git commits and immutable experiment artifacts,
+not through v1/v2/v3 modules, legacy directories, runtime flags, fallback paths, or compatibility
+loaders.
+
+A separate implementation may exist only when it is an explicitly approved, frozen experimental
+baseline required for comparison.
+
+Four situations that look alike and are not:
+
+- **A research iteration** upgrades the current method in place.
+- **Reproducing an experiment** pins a commit hash and immutable artifacts.
+- **A paper baseline** is frozen separately, and only with explicit approval.
+- **A design that failed** is deleted, not kept as an option.
+
+The last one is the one that erodes first. A rejected mechanism preserved behind a flag, an old schema
+kept "for loading older runs", a second prompt retained "for comparison" -- each is small, and together
+they are how a project becomes several methods referring to each other. Deleting a failed design costs
+nothing that a commit hash does not already hold.
+
+---
+
+# 23. Core behavioral principle
 
 The coding agent must optimize for:
 
