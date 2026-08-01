@@ -81,7 +81,7 @@ class _Block:
     line: int
     usable: bool = True             # False once its header was already reported as malformed
     singles: dict[str, tuple[str, int]] = field(default_factory=dict)
-    items: list[str] = field(default_factory=list)
+    items: list[tuple[str, int]] = field(default_factory=list)
     entries: list[tuple[str, str, int]] = field(default_factory=list)
     parameters: list[str] = field(default_factory=list)
     constraints: list[str] = field(default_factory=list)
@@ -289,7 +289,7 @@ def _read_field(block: _Block, text: str, number: int, reader: _Reader) -> None:
             return
         block.singles[name] = (value, number)
     elif name == "item":
-        block.items.append(value)
+        block.items.append((value, number))
     elif name == "contract-parameter":
         block.parameters.append(value)
     elif name == "contract-constraint":
@@ -495,7 +495,7 @@ def _declared_payload(block: _Block, reader: _Reader, declared: tuple[str, int],
         return _FAILED
     try:
         if text == "list":
-            return ListPayload(tuple(_scalar(v, reader, block.line) for v in block.items))
+            return ListPayload(tuple(_scalar(v, reader, line) for v, line in block.items))
         return MappingPayload(tuple((k, _scalar(v, reader, line)) for k, v, line in block.entries))
     except SchemaError as err:
         reader.fail(block.line, str(err))

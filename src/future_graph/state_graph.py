@@ -49,6 +49,9 @@ class StateGraph:
         """
         if not isinstance(relation, Relation):
             raise SchemaError(f"{relation!r} is not a known relation")
+        for endpoint in (source, target):
+            if not isinstance(endpoint, str):
+                raise SchemaError(f"an edge endpoint is text, got {type(endpoint).__name__}")
         self._g.add_edge(source, target, key=relation.value, relation=relation)
 
     # ------------------------------------------------------------------ reading
@@ -179,7 +182,8 @@ def _order(node_id: str) -> tuple[str, int]:
 
 
 def _safe_order(node_id: str) -> tuple[str, int]:
-    """Ordering for ids that may be malformed, since a dangling id can be anything."""
+    """Ordering for a string of any shape, since an edge may name one that no node declares and
+    sorting must never be what raises instead of reporting it."""
     try:
         return _order(node_id)
     except (ValueError, IndexError):
@@ -309,6 +313,10 @@ def _payload_from_dict(raw: dict | None):
     if not isinstance(raw, dict) or "type" not in raw:
         raise SchemaError("a payload is an object with a type")
     tag = raw["type"]
+    if not isinstance(tag, str):
+        # `tag not in _PAYLOAD_KEYS` would raise TypeError on an unhashable one, and this module
+        # promises SchemaError for everything a damaged artifact can hold.
+        raise SchemaError(f"a payload type is text, got {type(tag).__name__}")
     if tag not in _PAYLOAD_KEYS:
         raise SchemaError(f"unknown payload type {tag!r}")
     _exact_keys(raw, _PAYLOAD_KEYS[tag], f"a {tag} payload")

@@ -1,8 +1,10 @@
 """Invariants, and the fact that a candidate is told about all of its faults at once."""
 
+import pytest
+
 from future_graph import (
-    ComputationNode, InformationKind, InformationNode, InformationReference, Relation, StateGraph,
-    build,
+    ComputationNode, InformationKind, InformationNode, InformationReference, Relation, SchemaError,
+    StateGraph, build,
 )
 from future_graph.validation import unconsumed_information, validate
 
@@ -135,6 +137,20 @@ def test_a_dangling_id_of_any_shape_is_a_violation_and_not_an_exception():
     g = build(nodes=[comp("c1")], edges=[("not-an-id", Relation.REQUIRES, "c1"),
                                          ("c1", Relation.PRECEDES, "")])
     assert codes(g).count("dangling_edge") == 2
+
+
+@pytest.mark.parametrize("weird", ["", " ", "i", "9", "i-1", "iX", "n1", "c1x", "@i1", "i1 "])
+def test_a_dangling_endpoint_of_any_string_shape_is_a_violation(weird):
+    g = build(nodes=[comp("c1")], edges=[(weird, Relation.REQUIRES, "c1")])
+    assert "dangling_edge" in codes(g)
+
+
+@pytest.mark.parametrize("endpoint", [7, None, ("a", "b"), frozenset({1})])
+def test_an_endpoint_that_is_not_text_is_refused_when_the_edge_is_added(endpoint):
+    """The guarantee is arbitrary strings, and anything else is a programming error, said so here."""
+    g = build(nodes=[comp("c1")])
+    with pytest.raises(SchemaError, match="an edge endpoint is text"):
+        g.add_edge(endpoint, Relation.REQUIRES, "c1")
 
 
 def test_violations_read_as_sentences():

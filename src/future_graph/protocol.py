@@ -63,13 +63,13 @@ def _information_block(node: InformationNode) -> list[str]:
              f"description: {node.description}"]
     payload = node.payload
     if isinstance(payload, ScalarPayload):
-        lines.append(f"value: {_scalar_out(payload.value)}")
+        lines.append(f"value: {format_scalar(payload.value)}")
     elif isinstance(payload, ListPayload):
         lines.append("payload-type: list")
-        lines += [f"item: {_scalar_out(v)}" for v in payload.values]
+        lines += [f"item: {format_scalar(v)}" for v in payload.values]
     elif isinstance(payload, MappingPayload):
         lines.append("payload-type: mapping")
-        lines += [f"entry {k} = {_scalar_out(v)}" for k, v in payload.values]
+        lines += [f"entry {k} = {format_scalar(v)}" for k, v in payload.values]
     elif isinstance(payload, RuntimeReferencePayload):
         lines.append(f"runtime-name: {payload.name}")
     elif isinstance(payload, ContractPayload):
@@ -90,7 +90,7 @@ def _computation_block(node: ComputationNode) -> list[str]:
     return lines
 
 
-def _scalar_out(value) -> str:
+def format_scalar(value) -> str:
     """Write a scalar so that reading it back gives the same value, and the same type.
 
     Every string is quoted, without exception. Quoting only the awkward-looking ones means `"true"`
@@ -109,7 +109,7 @@ def _scalar_out(value) -> str:
 def _argument_out(value) -> str:
     if isinstance(value, InformationReference):
         return f"@{value.information_id}"
-    return _scalar_out(value)
+    return format_scalar(value)
 
 
 GRAMMAR = f"""\

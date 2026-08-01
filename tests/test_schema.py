@@ -187,6 +187,50 @@ def test_an_argument_name_may_not_contain_an_equals_sign_or_a_line_break():
         comp(arguments={"a\nb": 1})
 
 
+@pytest.mark.parametrize("char", ["\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85",
+                                  "\u2028", "\u2029"])
+def test_every_character_that_splits_a_line_is_rejected(char):
+    """str.splitlines() breaks on all of these, so the protocol would too."""
+    assert len(f"a{char}b".splitlines()) == 2
+    with pytest.raises(SchemaError, match="more than one line"):
+        info(description=f"a{char}b")
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_a_non_finite_number_is_rejected(value):
+    """nan is not equal to itself, so a graph holding one cannot round-trip through anything."""
+    with pytest.raises(SchemaError, match="not a finite number"):
+        ScalarPayload(value)
+    with pytest.raises(SchemaError, match="not a finite number"):
+        comp(arguments={"a": value})
+
+
+# --------------------------------------------------------------------------- normalization sticks
+
+def test_a_reference_keeps_the_id_the_check_normalized():
+    assert InformationReference(" i1 ").information_id == "i1"
+
+
+def test_a_mapping_keeps_the_key_the_check_normalized():
+    assert MappingPayload(((" a ", 1),)).values == (("a", 1),)
+
+
+def test_two_keys_that_normalize_alike_are_a_duplicate():
+    with pytest.raises(SchemaError, match="duplicate key"):
+        MappingPayload((("a", 1), (" a ", 2)))
+
+
+def test_two_argument_names_that_normalize_alike_are_a_duplicate():
+    with pytest.raises(SchemaError, match="is given twice"):
+        comp(arguments={"a": 1, " a ": 2})
+
+
+def test_contract_text_is_stored_stripped():
+    payload = ContractPayload("  apis.a.b  ", ("  x  ",), ("  y  ",))
+    assert payload.operation == "apis.a.b"
+    assert payload.parameters == ("x",) and payload.constraints == ("y",)
+
+
 def test_a_mapping_key_may_not_contain_an_equals_sign_or_a_line_break():
     with pytest.raises(SchemaError, match="separates a name from its value"):
         MappingPayload((("a=b", 1),))
@@ -382,6 +426,14 @@ def test_a_payload_missing_a_key_is_rejected():
         StateGraph.from_snapshot(snapshot(information=[
             {"id": "i1", "kind": "contract", "description": "d", "available": True,
              "payload": {"type": "contract", "operation": "apis.a.b", "parameters": []}}]))
+
+
+@pytest.mark.parametrize("tag", [[], {}, 7, None])
+def test_an_unhashable_or_non_text_payload_type_raises_schema_error_not_type_error(tag):
+    with pytest.raises(SchemaError, match="a payload type is text"):
+        StateGraph.from_snapshot(snapshot(information=[
+            {"id": "i1", "kind": "fact", "description": "d", "available": True,
+             "payload": {"type": tag, "value": 1}}]))
 
 
 def test_a_mapping_entry_that_is_not_a_pair_is_rejected():

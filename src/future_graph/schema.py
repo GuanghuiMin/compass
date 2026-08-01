@@ -14,6 +14,7 @@ its own consumers.
 from __future__ import annotations
 
 import ast
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -76,14 +77,22 @@ def _check_scalar(value: object, where: str) -> Scalar:
     if is_serialized_container(value):
         raise SchemaError(f"{where}: a stringified container is not a value; "
                           "an established result belongs in its own information node")
+    if isinstance(value, float) and not math.isfinite(value):
+        # nan is not equal to itself, so a graph holding one cannot round-trip through anything.
+        raise SchemaError(f"{where}: {value} is not a finite number")
     if isinstance(value, str):
         _check_single_line(value, where)
     return value
 
 
+# Everything str.splitlines() treats as a break, not just the two obvious ones: the protocol reads
+# its input with splitlines, so any of these would silently become a new line.
+LINE_BREAKS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+
+
 def _check_single_line(text: str, where: str) -> str:
     """Protocol-visible text is one line. A line protocol cannot carry anything else unambiguously."""
-    if any(c in text for c in "\r\n"):
+    if any(c in text for c in LINE_BREAKS):
         raise SchemaError(f"{where}: text spans more than one line")
     return text
 
@@ -143,16 +152,18 @@ class MappingPayload:
     def __post_init__(self) -> None:
         if not isinstance(self.values, tuple):
             raise SchemaError("MappingPayload.values: must be a tuple of pairs")
-        seen = set()
+        seen: set[str] = set()
+        checked: list[tuple[str, Scalar]] = []
         for i, pair in enumerate(self.values):
             if not isinstance(pair, tuple) or len(pair) != 2:
                 raise SchemaError(f"MappingPayload.values[{i}]: must be a (key, value) pair")
             key, value = pair
-            _check_key(key, f"MappingPayload.values[{i}] key")
+            key = _check_key(key, f"MappingPayload.values[{i}] key")
             if key in seen:
                 raise SchemaError(f"MappingPayload: duplicate key {key!r}")
             seen.add(key)
-            _check_scalar(value, f"MappingPayload[{key}]")
+            checked.append((key, _check_scalar(value, f"MappingPayload[{key}]")))
+        object.__setattr__(self, "values", tuple(checked))
 
 
 @dataclass(frozen=True)
@@ -176,14 +187,19 @@ class ContractPayload:
     def __post_init__(self) -> None:
         if not isinstance(self.operation, str) or not self.operation.strip():
             raise SchemaError("ContractPayload.operation: must be non-empty text")
-        _check_single_line(self.operation, "ContractPayload.operation")
+        # Stripped and kept stripped: the parser strips a field value, so anything else here would
+        # come back different from what went out.
+        object.__setattr__(self, "operation",
+                           _check_single_line(self.operation.strip(), "ContractPayload.operation"))
         for name, seq in (("parameters", self.parameters), ("constraints", self.constraints)):
             if not isinstance(seq, tuple):
                 raise SchemaError(f"ContractPayload.{name}: must be a tuple")
+            cleaned = []
             for i, item in enumerate(seq):
                 if not isinstance(item, str) or not item.strip():
                     raise SchemaError(f"ContractPayload.{name}[{i}]: must be non-empty text")
-                _check_single_line(item, f"ContractPayload.{name}[{i}]")
+                cleaned.append(_check_single_line(item.strip(), f"ContractPayload.{name}[{i}]"))
+            object.__setattr__(self, name, tuple(cleaned))
 
 
 InformationPayload = Union[ScalarPayload, ListPayload, MappingPayload,
@@ -201,7 +217,10 @@ class InformationReference:
     information_id: str
 
     def __post_init__(self) -> None:
-        _check_id(self.information_id, "i", "InformationReference.information_id")
+        # Keep what the check normalizes, or " i1 " passes here and is written back out unusable.
+        object.__setattr__(self, "information_id",
+                           _check_id(self.information_id, "i",
+                                     "InformationReference.information_id"))
 
 
 ArgumentValue = Union[Scalar, InformationReference]
@@ -229,6 +248,10 @@ class ComputationNode:
         checked: dict[str, ArgumentValue] = {}
         for key, value in self.arguments.items():
             key = _check_key(key, f"{self.id}.arguments name")
+            if key in checked:
+                # After normalization, so "a" and " a " cannot arrive as two arguments and leave
+                # as one with whichever value came last.
+                raise SchemaError(f"{self.id}.arguments: {key!r} is given twice")
             if isinstance(value, InformationReference):
                 checked[key] = value
             else:

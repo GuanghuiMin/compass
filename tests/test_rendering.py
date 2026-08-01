@@ -4,7 +4,7 @@ import pytest
 
 from future_graph import (
     ComputationNode, ContractPayload, InformationKind, InformationNode, InformationReference,
-    ListPayload, Relation, RuntimeReferencePayload, ScalarPayload, build,
+    ListPayload, MappingPayload, Relation, RuntimeReferencePayload, ScalarPayload, build,
 )
 from future_graph.rendering import render
 
@@ -95,14 +95,20 @@ def test_an_empty_graph_says_so():
 # --------------------------------------------------------------------------- how information appears
 
 def _mentions(text):
-    """Every information id the text mentions, in order, split into definitions and references."""
+    """Every information id the text mentions, in order, split into definitions and references.
+
+    A definition reads `- [i1|fact] ...` and a reference reads `- [i1]`.
+    """
     definitions, references = [], []
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped.startswith("- [i"):
             continue
-        ident = stripped[3:stripped.index("]")]
-        (definitions if stripped[stripped.index("]") + 1:].strip() else references).append(ident)
+        inside = stripped[3:stripped.index("]")]
+        if "|" in inside:
+            definitions.append(inside.split("|")[0])
+        else:
+            references.append(inside)
     return definitions, references
 
 
@@ -130,18 +136,31 @@ def test_shared_information_is_defined_once_and_referenced_afterwards():
 
 
 def test_no_information_is_referenced_before_it_is_defined():
-    text = render(shared())
-    definitions, _ = _mentions(text)
     seen = set()
-    for line in text.splitlines():
+    for line in render(shared()).splitlines():
         stripped = line.strip()
         if not stripped.startswith("- [i"):
             continue
-        ident = stripped[3:stripped.index("]")]
-        if stripped[stripped.index("]") + 1:].strip():
-            seen.add(ident)
+        inside = stripped[3:stripped.index("]")]
+        if "|" in inside:
+            seen.add(inside.split("|")[0])
         else:
-            assert ident in seen, f"{ident} is referred to before it is defined"
+            assert inside in seen, f"{inside} is referred to before it is defined"
+
+
+def test_a_produced_result_is_defined_under_its_producer():
+    """SPEC: first structural mention, which for produced information is the producer."""
+    text = render(episode())
+    produced = text.split("Produces:")[1].splitlines()[1]
+    assert produced.strip().startswith("- [i2|result]")
+    consumer_block = text.split("[c2]")[1]
+    assert "- [i2]" in consumer_block and "[i2|result]" not in consumer_block
+
+
+def test_a_definition_carries_its_kind_and_a_reference_does_not():
+    text = render(shared())
+    assert "[i1|contract]" in text
+    assert "- [i1]" in text
 
 
 @pytest.mark.parametrize("graph_of", [episode, after_login, shared])
@@ -181,8 +200,26 @@ def test_a_string_argument_and_a_number_argument_do_not_read_the_same():
     assert "a = 7" in one(7)
 
 
-def test_an_empty_list_payload_says_it_holds_nothing():
-    g = build(nodes=[comp("c1", "Do the work"),
-                     info("i1", "matches for the query", payload=ListPayload(()))],
+def _rendered_payload(payload):
+    g = build(nodes=[comp("c1", "Do the work"), info("i1", "the value", payload=payload)],
               edges=[("i1", Relation.REQUIRES, "c1")])
-    assert "(nothing)" in render(g)
+    return render(g)
+
+
+@pytest.mark.parametrize("payload,shown", [
+    (ScalarPayload("x"), '("x")'),
+    (ScalarPayload(7), "(7)"),
+    (ListPayload(("x",)), '(["x"])'),
+    (ListPayload(()), "([])"),
+    (MappingPayload((("a", 1),)), "({a=1})"),
+    (MappingPayload(()), "({})"),
+])
+def test_a_value_shows_its_container_as_well_as_its_type(payload, shown):
+    assert shown in _rendered_payload(payload)
+
+
+def test_no_two_payload_shapes_render_alike():
+    shapes = [ScalarPayload("x"), ScalarPayload(7), ListPayload(("x",)), ListPayload(()),
+              MappingPayload((("a", 1),)), MappingPayload(())]
+    rendered = [_rendered_payload(p) for p in shapes]
+    assert len(set(rendered)) == len(shapes)

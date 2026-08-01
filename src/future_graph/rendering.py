@@ -15,7 +15,7 @@ the same. The protocol's canonical form is reused rather than reimplemented, so 
 from __future__ import annotations
 
 from .frontier import is_executable, ordered_computations
-from .protocol import _scalar_out
+from .protocol import format_scalar
 from .schema import (
     ComputationNode, ContractPayload, InformationNode, InformationReference, ListPayload,
     MappingPayload, RuntimeReferencePayload, ScalarPayload,
@@ -80,10 +80,11 @@ def _computation_block(graph: StateGraph, computation: ComputationNode,
 
 
 def _information_line(node: InformationNode, seen: set[str]) -> str:
+    """Defined once with its kind; every later mention is the id, which the reader has already met."""
     if node.id in seen:
         return f"[{node.id}]"
     seen.add(node.id)
-    text = f"[{node.id}] {node.description}"
+    text = f"[{node.id}|{node.kind.value}] {node.description}"
     detail = _payload(node)
     if detail:
         text += f" ({detail})"
@@ -106,15 +107,17 @@ def _payload(node: InformationNode) -> str:
             parts.append("; ".join(payload.constraints))
         return ", ".join(parts)
     if isinstance(payload, ScalarPayload):
-        return _scalar_out(payload.value)
+        return format_scalar(payload.value)
     if isinstance(payload, ListPayload):
-        return ", ".join(_scalar_out(v) for v in payload.values) or "nothing"
+        # Brackets, so a string and a list of one string do not read the same, and an empty list
+        # does not read like an empty mapping.
+        return "[" + ", ".join(format_scalar(v) for v in payload.values) + "]"
     if isinstance(payload, MappingPayload):
-        return ", ".join(f"{k}={_scalar_out(v)}" for k, v in payload.values) or "nothing"
+        return "{" + ", ".join(f"{k}={format_scalar(v)}" for k, v in payload.values) + "}"
     return ""
 
 
 def _argument(value) -> str:
     if isinstance(value, InformationReference):
         return f"@{value.information_id}"
-    return _scalar_out(value)
+    return format_scalar(value)
