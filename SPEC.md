@@ -479,7 +479,111 @@ rendered handover.
 
 ---
 
-## 13. What only an audit can decide
+## 13. Frozen-slice regeneration preflight
+
+Five episodes, replayed from slices recorded when a different implementation ran them. The operator
+sees each slice exactly as the agent produced it, and the agent's actions never respond to anything
+this system writes: the trajectory is frozen, so this measures regeneration and not a loop.
+
+It is a frozen-slice regeneration preflight with reconstructed per-episode operating rules. It is not
+an exact replay of the original compressor's inputs, and it is not a matched-input comparison against
+the previous implementation. The report uses those words.
+
+### 13.1 The five episodes
+
+In this order, from `source_path_at_freeze` recorded in the manifest. A sixth episode present in that
+directory, `f861c32_2`, is not in the set.
+
+| episode | boundaries | goal | rules |
+| --- | --- | --- | --- |
+| `042a9fc_3` | 5 | 237 B | 7560 B |
+| `6b6ca61_2` | 7 | 432 B | 7763 B |
+| `6f4b9a5_3` | 7 | 203 B | 7506 B |
+| `83a7951_2` | 11 | 316 B | 7621 B |
+| `9dabbc9_3` | 2 | 281 B | 7602 B |
+
+32 boundaries, 410,674 bytes of `delta_h`. Every length here and in the manifest is a UTF-8 byte
+length, never a count of characters: six of the 32 slices contain non-ASCII and the two differ.
+
+### 13.2 What each input is
+
+**goal** is `episode["instruction"]`, the JSON string value, passed unchanged. Its recorded hash is
+over that string encoded as UTF-8.
+
+**rules** is the committed file named by `rules_file`, read as bytes, verified against `rules_sha256`
+over exactly those bytes, and decoded once as strict UTF-8. Nothing strips it, normalizes its
+newlines, renders it, truncates it or transforms it in any other way.
+
+**delta_h** is `event["compass"]["delta_h"]`, a string, passed unchanged, ordered by
+`compass.compaction_index` ascending. Its recorded hash is over that string encoded as UTF-8.
+
+`FIXED_RULES` is fixed across the boundaries of one episode, not identical across episodes. The five
+differ because the live prompt carries that task's supervisor and instruction, so the same instruction
+appears in both `ORIGINAL_GOAL` and `FIXED_RULES`. That duplication is what the live interface did and
+is not cleaned up here.
+
+### 13.3 The manifest
+
+`inputs/preflight/manifest.json`. Each episode entry carries `id`, `episode_file`,
+`episode_file_sha256`, `goal_bytes`, `goal_sha256`, `rules_file`, `rules_bytes`, `rules_sha256`,
+`boundary_count`, and one row per boundary holding `compaction_index`, `delta_h_bytes` and
+`delta_h_sha256`. `episode_file` is relative to `source_path_at_freeze`; `rules_file` is relative to
+the repository.
+
+```text
+input_manifest_sha256
+  29e9c03a8d36b48a00f12641c2e134661f3e8988e131f3992ae0a8a6aa94138d
+```
+
+That is the SHA-256 of the canonical JSON of the `"inputs"` object alone — `ensure_ascii` false,
+`sort_keys` true, separators `(",", ":")`, UTF-8, 6,258 bytes — so the field can sit beside what it
+covers without hashing itself.
+
+A loader verifies every entry. Matching the top-level hash and then trusting the contents would make
+the per-entry hashes decoration.
+
+`source_path_at_freeze` records where the inputs were frozen from. It is not the only place they may
+later be read: another directory is acceptable exactly when every committed hash matches.
+
+### 13.4 The rules are reconstructed, and that is a stated limitation
+
+```text
+source_kind: reconstructed
+historical_byte_identity_verified: false
+```
+
+The rollout that produced these trajectories handed its compressor `agent.build_prompt(env)` and
+recorded neither those bytes nor a hash of them. The rules here were rebuilt by rendering the AppWorld
+agent's inline `PROMPT_TEMPLATE`, lstripped, with that task's supervisor and instruction — the path the
+rollout took, since it passed `prompt_file=None`, with nothing prepended because its context sections
+were empty, no truncation because the live path truncated nothing, and no tool-call suffix because that
+is appended to the system message rather than to `build_prompt`.
+
+The two files that render it are uncommitted in their own repository, so byte identity with the
+original run cannot be established. `reconstruction_basis` in the manifest records the base commit and
+the hashes of those files and of each task's `specs.json`, which are provenance for the reconstruction
+and not runtime inputs: regeneration consumes the frozen rules bytes and never reads `specs.json`.
+
+This is a provenance limitation, and it is not a bar to the preflight, because nothing here claims to
+reproduce the original call.
+
+### 13.5 One sample per boundary
+
+```text
+sampling_is_deterministic: false
+```
+
+The provider ignores `temperature`, so `temperature 0.0` and `seed 1` are sent and recorded and claim
+nothing. Each boundary is regenerated once.
+
+The report may say that the sampled regeneration at boundary *k* was rejected. It may not say that
+boundary *k* is rejected, that rejection is an inherent property of that boundary, or that one sample
+estimates a rejection probability or a boundary's difficulty. A rerun is a new stochastic run: it never
+completes an earlier one and never overwrites it.
+
+---
+
+## 14. What only an audit can decide
 
 Code cannot decide, and must not appear to decide:
 
@@ -494,7 +598,7 @@ them explicitly rather than implying them from counts.
 
 ---
 
-## 14. Non-goals
+## 15. Non-goals
 
 Not a knowledge graph of everything observed. Not a compressed transcript. Not a planner with a memory
 store attached. No second metadata dictionary, no hidden history, no compatibility layer with the
