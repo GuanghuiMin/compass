@@ -123,11 +123,15 @@ or runtime references would be counting labels.
 | an available `RUNTIME_REFERENCE` | must carry a `RuntimeReferencePayload` |
 | anything with `available=False` | carries no payload at all |
 
-The last rule settles a contradiction rather than tidying one. A runtime reference that is not
-available yet would otherwise say both "the agent bound this name" and "this does not exist yet". A
-token that has not been obtained is a `RESULT` that is not available, described as what it will be; it
-becomes an available `RUNTIME_REFERENCE`, with the name the agent actually bound, in the snapshot after
-the code that bound it ran.
+`CONTRACT` and `RUNTIME_REFERENCE` are available-only kinds.
+
+An unavailable expected interface or runtime artifact is represented as a `RESULT` describing what a
+future computation will establish. After it is established, a later snapshot may represent it as an
+available `CONTRACT` or `RUNTIME_REFERENCE` with the corresponding typed payload.
+
+This settles a contradiction rather than tidying one. A runtime reference that is not available yet
+would otherwise say both "the agent bound this name" and "this does not exist yet". The transition is
+between snapshots, never a flip of availability on one node.
 
 ---
 
