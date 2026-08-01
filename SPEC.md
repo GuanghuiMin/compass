@@ -291,13 +291,33 @@ Only the future, in topological order, frontier first, later work after. No comp
 no corrections section, no raw trajectory, no status, no transition provenance. The renderer is
 deterministic.
 
-Information appears under the computations that consume it. Information consumed by more than one
-computation is written out once, under the first consumer in the rendered order, and referred to by id
-under the others. There is no section of information standing apart from the work that needs it, and no
-id is referred to that the reader has not already seen defined.
+Information is defined at its first structural mention in rendered order: under its future producer
+when one exists, and otherwise under its first consumer. Every later mention is the id alone.
 
-A rendered value keeps the type the graph holds. `7` and `"7"` are different states and must not read
-identically in the handover, so scalars are written in the same canonical form the protocol uses.
+Defining at the producer rather than always at a consumer is what keeps the text readable top to
+bottom. A computation that will establish something says so where it is described, the computations
+that need it point back at an id already defined, and nothing is referred to before the reader has seen
+it. Every information node is defined exactly once, and there is no section of information standing
+apart from the work that needs it.
+
+A definition carries the kind: `[i2|constraint]`. A constraint, a failure consequence and a plain fact
+are different things to a reader deciding what to do next, and a distinction the graph holds is worth
+nothing if the handover drops it. References stay bare, `[i2]`, because the reader has already seen it.
+
+A rendered value keeps both the type and the container the graph holds. `7`, `"7"`, `["7"]` and an
+empty list are four different states and none of them may read like another, so scalars use the
+protocol's canonical form and containers are written with their brackets:
+
+```text
+"x"          a string
+7            a number
+["x"]        a list of one
+[]           a list of nothing
+{a=1}        a mapping
+{}           a mapping of nothing
+```
+
+"nothing" as a word is not enough: it says the container is empty without saying which container it is.
 
 ---
 
