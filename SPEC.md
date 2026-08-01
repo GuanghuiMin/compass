@@ -107,8 +107,27 @@ Payloads are flat. No nested list, no nested mapping, no serialized Python objec
 `dict` or `list` anywhere in a payload or a description. A runtime reference stores the *name* the
 agent bound, never the value behind it, and code never reads the runtime to find that value.
 
-`available=False` means "a future computation is expected to produce this"; its payload is normally
-`None`. `available=True` means the task, the fixed rules, or the observed trajectory established it.
+`available=False` means "a future computation is expected to produce this". `available=True` means the
+task, the fixed rules, or the observed trajectory established it.
+
+### 2.3 Which payload may sit on which kind
+
+A kind that does not constrain its payload is not a kind, it is a label, and every count of contracts
+or runtime references would be counting labels.
+
+| | |
+| --- | --- |
+| `ContractPayload` | only on `CONTRACT` |
+| `RuntimeReferencePayload` | only on `RUNTIME_REFERENCE` |
+| an available `CONTRACT` | must carry a `ContractPayload` |
+| an available `RUNTIME_REFERENCE` | must carry a `RuntimeReferencePayload` |
+| anything with `available=False` | carries no payload at all |
+
+The last rule settles a contradiction rather than tidying one. A runtime reference that is not
+available yet would otherwise say both "the agent bound this name" and "this does not exist yet". A
+token that has not been obtained is a `RESULT` that is not available, described as what it will be; it
+becomes an available `RUNTIME_REFERENCE`, with the name the agent actually bound, in the snapshot after
+the code that bound it ran.
 
 ---
 
@@ -224,7 +243,35 @@ supported Venmo interface", required by "find users through the confirmed search
 
 ---
 
-## 8. Frontier
+## 8. Partial and resumable computations
+
+Work is often interrupted halfway: three pages of four retrieved, nine of twelve payments made. There
+is no `in_progress` status for this, and adding one would be the wrong repair. A status word says that
+something is unfinished without saying what was achieved or what is needed to carry on, so the resume
+state would live in a label the next collapse cannot carry.
+
+The graph already expresses it, and this is how it must be expressed.
+
+**What was achieved becomes available information.** The runtime reference holding the partial
+accumulator, the cursor or page number to continue from, which items are done, which are left. Each is
+an information node, available, required by the computation that will continue the work.
+
+**What remains becomes a computation.** Not "retrieve the pages" again, which would repeat work, but
+"continue retrieving the remaining pages", requiring the information above.
+
+**The finished artifact is separate information, not yet available.** The complete collection is its
+own node with `available=False`, produced by that computation. A partial accumulator and a complete
+collection are two nodes with different descriptions, never one node whose availability flips: a
+consumer that needs all of the data must not be able to read the half that exists.
+
+**The completed part collapses.** The computation that retrieved the first three pages is gone. What
+survives is what the remaining work consumes, and nothing else — not the requests that were made, not
+the responses in full, not the order they arrived in.
+
+If continuing is no longer possible or no longer wanted, the resume information loses its consumer and
+is collected, which is the same rule as everywhere else.
+
+## 9. Frontier
 
 Derived, never stored. A computation is executable when it has no incoming `PRECEDES` edge from another
 computation in the graph and every information node with a `REQUIRES` edge into it is available.
@@ -234,16 +281,23 @@ edge from information that is not yet available — whose producer is upstream i
 
 ---
 
-## 9. Rendering
+## 10. Rendering
 
-Only the future, in topological order, frontier first, later work after, information shown under the
-computations that consume it and defined once when shared. No completed-history section, no corrections
-section, no raw trajectory, no status, no unconnected information list, no transition provenance. The
-renderer is deterministic.
+Only the future, in topological order, frontier first, later work after. No completed-history section,
+no corrections section, no raw trajectory, no status, no transition provenance. The renderer is
+deterministic.
+
+Information appears under the computations that consume it. Information consumed by more than one
+computation is written out once, under the first consumer in the rendered order, and referred to by id
+under the others. There is no section of information standing apart from the work that needs it, and no
+id is referred to that the reader has not already seen defined.
+
+A rendered value keeps the type the graph holds. `7` and `"7"` are different states and must not read
+identically in the handover, so scalars are written in the same canonical form the protocol uses.
 
 ---
 
-## 10. Protocol
+## 11. Protocol
 
 The model writes a line-oriented block form, not JSON. One field per line, so a missing comma costs one
 field rather than the whole graph.
@@ -275,16 +329,42 @@ EDGE c1 PRECEDES c2
 END_GRAPH
 ```
 
-The parser normalizes markdown fences, indentation, blank lines, field order, keyword capitalization,
-optional quotes around simple scalars, and trailing whitespace.
+The parser normalizes, and records every instance of, exactly this list: one matched pair of markdown
+fences around the whole answer, indentation, blank lines, field order, capitalization of structural
+keywords and field names, spacing around the `:` of a field, spacing around the `=` of an `entry` or
+`argument`, quotes around scalars, and trailing whitespace.
 
 The parser repairs nothing else. Not a missing node, not a missing edge, not a dangling reference, not a
 wrong endpoint type, not an unavailable information node without a producer, and never a decision about
 which computation should consume what. Surface syntax is tolerant; graph semantics are strict.
 
+### 11.1 Everything the schema allows, the protocol can carry
+
+These are the same set, and where they were not, the protocol is fixed rather than the schema narrowed
+to hide it.
+
+**Values are single-line.** No description, payload value, operation or runtime name contains a line
+break, and no argument name or mapping key contains `=` or a line break. A line protocol cannot carry
+those unambiguously, and escaping them would buy a case that a future graph has no use for.
+
+**An empty list and an empty mapping are states, not absences.** "The query succeeded and matched
+nothing" is worth saying. A payload therefore declares itself:
+
+```text
+payload-type: list
+item: ...            (zero or more)
+```
+
+```text
+payload-type: mapping
+entry k = v          (zero or more)
+```
+
+so that a list with no items is read back as an empty list rather than as no payload at all.
+
 ---
 
-## 11. What only an audit can decide
+## 12. What only an audit can decide
 
 Code cannot decide, and must not appear to decide:
 
@@ -299,7 +379,7 @@ them explicitly rather than implying them from counts.
 
 ---
 
-## 12. Non-goals
+## 13. Non-goals
 
 Not a knowledge graph of everything observed. Not a compressed transcript. Not a planner with a memory
 store attached. No second metadata dictionary, no hidden history, no compatibility layer with the
