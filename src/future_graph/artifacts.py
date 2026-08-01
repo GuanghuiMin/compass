@@ -187,21 +187,43 @@ def _rebuild(snapshot: dict, where: str):
 
 
 def _check_outcome(raw: dict) -> None:
-    """The three outcomes each have one shape, and a record disagreeing with itself is not evidence."""
-    accepted, violations = raw["accepted"], raw["violations"]
-    candidate, collected = raw["parsed_candidate_snapshot"], raw["collected"]
+    """A boundary ends in one of three shapes, and a record must be one of them.
+
+    Accepted: parsed, no errors, no violations, and a result that may differ from the previous graph.
+    Parse failure: nothing parsed, errors, no violations, nothing collected, previous graph intact.
+    Validation rejection: parsed, no errors, violations, nothing collected, previous graph intact.
+
+    Anything else is a record disagreeing with itself. The refusals matter most: a refusal that
+    carries a different graph forward would be a boundary claiming to have changed nothing while
+    changing everything.
+    """
+    accepted = raw["accepted"]
+    candidate = raw["parsed_candidate_snapshot"]
+    parse_errors, violations, collected = raw["parse_errors"], raw["violations"], raw["collected"]
+
     if accepted:
-        if violations:
-            raise ArtifactError("record says accepted and also lists violations")
         if candidate is None:
             raise ArtifactError("record says accepted with nothing parsed")
-    else:
-        if candidate is None and violations:
+        if parse_errors:
+            raise ArtifactError("record says accepted and also lists parse errors")
+        if violations:
+            raise ArtifactError("record says accepted and also lists violations")
+        return
+
+    if collected:
+        raise ArtifactError("record collected information from a graph it did not accept")
+    if raw["resulting_snapshot"] != raw["previous_snapshot"]:
+        raise ArtifactError("record refused a graph and did not keep the previous one")
+    if candidate is None:
+        if not parse_errors:
+            raise ArtifactError("record refused with nothing parsed and no parse error")
+        if violations:
             raise ArtifactError("record has violations for a candidate that never parsed")
-        if collected:
-            raise ArtifactError("record collected information from a graph it did not accept")
-    if raw["parse_errors"] and candidate is not None:
-        raise ArtifactError("record has parse errors and a parsed candidate")
+    else:
+        if parse_errors:
+            raise ArtifactError("record has parse errors and a parsed candidate")
+        if not violations:
+            raise ArtifactError("record refused a candidate that had no violation")
 
 
 def _call_from_dict(raw: dict) -> ModelCall:

@@ -474,6 +474,34 @@ def test_a_record_that_collected_from_a_graph_it_refused_is_rejected():
         RegenerationRecord.from_dict(raw)
 
 
+def test_a_refusal_with_nothing_parsed_and_no_parse_error_is_rejected():
+    _, result = run(UNPARSEABLE)
+    raw = json.loads(json.dumps(result.record.to_dict()))
+    raw["parse_errors"] = []
+    with pytest.raises(ArtifactError, match="refused with nothing parsed and no parse error"):
+        RegenerationRecord.from_dict(raw)
+
+
+def test_a_refusal_of_a_candidate_with_no_violation_is_rejected():
+    _, result = run(INVALID)
+    raw = json.loads(json.dumps(result.record.to_dict()))
+    raw["violations"] = []
+    with pytest.raises(ArtifactError, match="refused a candidate that had no violation"):
+        RegenerationRecord.from_dict(raw)
+
+
+@pytest.mark.parametrize("answer", [UNPARSEABLE, INVALID])
+def test_a_refusal_that_carries_a_different_graph_forward_is_rejected(answer):
+    """Otherwise a record could claim to have changed nothing while changing everything."""
+    _, result = run(answer)
+    other = build(nodes=[ComputationNode(id="c1", description="something else entirely")])
+    raw = json.loads(json.dumps(result.record.to_dict()))
+    raw["resulting_snapshot"] = other.to_snapshot()
+    raw["handover"] = render(other)          # keep the handover honest so the outcome check fires
+    with pytest.raises(ArtifactError, match="refused a graph and did not keep the previous one"):
+        RegenerationRecord.from_dict(raw)
+
+
 def test_a_record_with_parse_errors_and_a_candidate_is_rejected():
     _, result = run(UNPARSEABLE)
     raw = json.loads(json.dumps(result.record.to_dict()))
