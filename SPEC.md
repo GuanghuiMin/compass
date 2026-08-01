@@ -481,9 +481,10 @@ rendered handover.
 
 ## 13. Frozen-slice regeneration preflight
 
-Five episodes, replayed from slices recorded when a different implementation ran them. The operator
-sees each slice exactly as the agent produced it, and the agent's actions never respond to anything
-this system writes: the trajectory is frozen, so this measures regeneration and not a loop.
+Five episodes, replayed from slices recorded when a different implementation ran them. At each
+boundary, the operator receives the `event["compass"]["delta_h"]` string exactly as recorded in the
+frozen trajectory artifact, and the agent's actions never respond to anything this system writes: the
+trajectory is frozen, so this measures regeneration and not a loop.
 
 It is a frozen-slice regeneration preflight with reconstructed per-episode operating rules. It is not
 an exact replay of the original compressor's inputs, and it is not a matched-input comparison against
