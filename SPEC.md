@@ -648,10 +648,18 @@ so that a list with no items is read back as an empty list rather than as no pay
 
 ---
 
-## 12. The regeneration operator
+## 12. The update operators
 
-One function produces every graph this system ever holds. The initial graph is that function with an
-empty previous graph, so there is no separate construction path to disagree with the recurrent one.
+Two operators write graphs, and they are not alternatives offered to a caller. **Local revision
+(§12.8) is the updater**: it runs at every boundary, empty previous graph or not. **Complete-graph
+regeneration (§12.1–§12.7) is the baseline**, kept unchanged and reachable for measurement and
+debugging. The normal path is never routed through it.
+
+Both take the same four inputs and produce the same kind of artifact. What differs is what the model
+is asked to write, and the reason for preferring one is stated in §12.8.
+
+Everything §12.1 says about the inputs, §12.6 about failure and §12.7 about the call applies to both
+operators; the local-revision sections say only where they differ.
 
 ### 12.1 What it is given, and what the model sees
 
@@ -826,6 +834,237 @@ removed and put back identically and listing it would bury the real edits.
 
 Interface completion is **not** a parser normalization and is not recorded as one. Normalizations are
 tolerated surface; this is a change to the graph.
+
+### 12.8 Local revision, and why it is the updater
+
+Complete-graph rewriting asks the model to reproduce the entire remaining plan at every boundary. On
+synthetic transitions with small graphs it works. On real trajectories it does not, and the reason is
+not comprehension: on a five-boundary episode the model read the previous graph, understood the
+trajectory and wrote the right plan, and the boundaries were still refused — for a missing block
+terminator, for eleven reversed `REQUIRES` edges, for a reflexive `PRECEDES`. Every one of those is a
+surface slip, and every one cost the whole update.
+
+That failure surface grows with the size of the state, not the size of the change. A method whose
+per-boundary failure probability rises with everything it has already accumulated cannot sustain
+recurrence, which is what it exists to do. Parser tolerance (§11) reduced the constant and did not
+change the shape.
+
+Local revision changes the shape. The model writes only the regions the slice affected, so an answer
+tracks the change; everything unmentioned is preserved by code, and no relation is written as a
+directed edge at all.
+
+**What the model may say.** Seven operations, and nothing else:
+
+| | |
+| --- | --- |
+| `ADD` | new work at the top level |
+| `REPLACE <c>` | this work, as planned, is wrong or superseded |
+| `COMPLETE <c>` | this work is done |
+| `INVALIDATE <c>` | this work will not happen and establishes nothing |
+| `REVISE <c>` | a surviving computation's relations changed |
+| `REVISE_INFO <i>` | a surviving information node says something more exact |
+| `INVALIDATE_INFO <i>` | this information was wrong, not merely unneeded |
+
+Relations are written as fields of the entity whose meaning they describe — `requires`, `produces`,
+`refined-into`, `after` — and the code builds the directed edge. There is no way to write an edge, so
+there is no way to write one backwards. `INTERFACE_INPUT` and `INTERFACE_OUTPUT` are never written;
+they are derived, exactly as in §3.1.
+
+A name with a leading `+` introduces a new entity; a bare name anchors to a node of the previous
+graph. Ids remain snapshot-local (§4): survivors are renumbered in previous canonical order, then new
+entities in declaration order, and the complete mapping is recorded.
+
+`REPLACE`, `COMPLETE` and `INVALIDATE` remove the named computation **and its whole refinement
+subtree**. Named regions must be disjoint: naming a computation and something it is refined into is
+refused, because the two operations would disagree about the same node.
+
+A replacement inherits the position of what it replaced. Roots written inside a `REPLACE` that are
+not children of another root in the same operation become children of the removed root's parents.
+
+**Crossing accounting.** For a removed region, the code cannot distinguish a relation the model
+forgot from one it meant to drop, and guessing either way silently changes the plan. So every
+non-derived relation crossing the boundary of a removed region must be accounted for, or the revision
+is refused as `unaccounted_crossing_relation`:
+
+| crossing | accounted for by |
+| --- | --- |
+| information the region required | the replacement requires it, or `no-longer-requires` |
+| an order the region was under | the replacement is `after` it, or `no-longer-after` |
+| information the region produced, still needed | the replacement produces it, or `NOW_AVAILABLE`, or `INVALIDATE_INFO` |
+| work that waited on the region | `REVISE` on that successor, with `remove-after` naming the removed work or an `add-after` saying what it waits on now |
+
+`COMPLETE` and `INVALIDATE` account for their own incoming crossings: the work is gone, so what it
+required and the order it was under go with it. `COMPLETE` also satisfies what waited on it.
+`INVALIDATE` does not — an invalidated prerequisite must not silently unlock its successor, so the
+successor must be revised or replaced.
+
+**Dataflow does not account for an outgoing `PRECEDES`.** It is tempting to let a survivor go
+unmentioned when the replacement produces something it already requires, on the grounds that the
+ordering is then implied. It is not the same ordering. Requiring what one part of a replacement
+produces orders the successor after *that part*; the removed edge may have meant it waits for the
+whole obligation, and a replacement that splits one computation into a produce step and a verify
+step makes the two differ. Deciding which the old edge meant is a judgement about the strength of an
+ordering in a graph that no longer exists, and the code holds to its rule: **it completes only what
+is uniquely derivable, and the semantic strength of a prior ordering is not.** So the successor is
+named, in a `REVISE` that speaks about its ordering: `remove-after` naming the removed work, or an
+`add-after` saying what it waits on instead. When the dataflow does suffice, `remove-after` alone is
+the right answer and `add-after` must not follow, because that would be the duplicate `PRECEDES`
+§3 excludes.
+
+A `REVISE` of that successor about anything else does not account for it. If it did, any revision
+of the right computation would satisfy the check without ever mentioning an ordering.
+
+Information whose consumer is invalidated is not free either: `INVALIDATE_INFO` on a node a surviving
+computation still requires is refused unless that computation drops the requirement, and
+`INVALIDATE_INFO` on a node a surviving computation still produces is refused outright.
+
+### 12.9 Region-internal information
+
+When regions are removed, the code deterministically removes an existing information node when all
+three hold:
+
+- at least one computation produced it, and every producer was inside a removed region;
+- every consumer was inside a removed region, or explicitly dropped the requirement;
+- the revision does not reuse it — not required, produced, referenced by an argument, added as a
+  requirement, established by `NOW_AVAILABLE`, or revised.
+
+This is intermediate state of a subtree that is going away, and it leaves with the subtree. It is
+**code-owned removal and not model-authored `INVALIDATE_INFO`**, and it is recorded under its own
+reason, `region_internal`.
+
+It must happen before validation, not at collection. An unavailable node whose only producer was
+removed violates the one-producer rule (§6), so validation would refuse a revision the model wrote
+correctly, over a node it had no reason to mention.
+
+The first condition is what keeps the crossing rules meaningful. Information the region merely
+*consumed* is an input, not internal state; removing it silently would let a model that forgot
+`requires` produce work that lost an input it needed. Anything with a surviving producer, a surviving
+consumer or a reference in the revision is likewise not internal, and stays subject to §12.8.
+
+Information that survives but that nothing requires is neither of these. It is collected (§7) and
+recorded as collected.
+
+### 12.10 `COMPLETE ... NOW_AVAILABLE`
+
+The only transition from `available: false` to `available: true`. It may name only an existing
+previous-graph information node that
+
+1. is currently unavailable,
+2. has exactly one producer, and
+3. has that producer inside the completed region.
+
+Anything else is refused. Unrelated completion must not be able to make arbitrary information
+available, and V1 does not accept newly declared information here.
+
+Applying it is deterministic:
+
+1. remove the producer inside the completed region;
+2. set the node available;
+3. apply any declared `kind`, `description` and payload — this is where a promised `result` becomes
+   the `contract` or `runtime_reference` it turned out to be;
+4. materialize an available `INTERFACE_OUTPUT` on each surviving refined ancestor of the completed
+   root that the result actually crosses, judged by the previous ancestry and the resulting graph's
+   surviving consumers.
+
+Step 4 is the one interface edge derivation cannot recover (§3.1): once the producing child is gone,
+nothing distinguishes a result the refinement established from a value established elsewhere that it
+happens to use, because an available node has no producer either way. It is recoverable *here*, and
+only here, because `COMPLETE root` together with `NOW_AVAILABLE i` supplies exactly the provenance the
+graph is about to lose.
+
+All four are recorded in `completion_changes`, separately from generic interface completion. The
+semantic fact came from the model's declaration; the code only carried it out, and a record that
+merged the two could not say which.
+
+### 12.11 The empty revision
+
+`BEGIN_REVISION` immediately followed by `END_REVISION` is valid and accepted. It says the slice
+changed nothing the state has to carry.
+
+It is an exact no-op: the resulting graph is the previous graph, unrenumbered and with its derived
+edges intact; the handover is unchanged; no affected roots, touched nodes, removals or deterministic
+changes are recorded; and the boundary ends normally, with `delta_h` consumed and not carried
+forward.
+
+Without it, a boundary that established nothing structural would force the model to invent a change,
+and an invented change is worse than no change.
+
+### 12.12 The local-revision pipeline
+
+```text
+raw output
+  -> parse_revision              surface, the same tolerances as §11
+  -> apply_revision              anchors, regions, crossings, completion, identity
+       -> refuse as a whole, or
+       -> snapshot the assembled graph, before anything is derived
+  -> replace(previous, assembled)
+       -> drop reflexive PRECEDES edges
+       -> add the REQUIRES edges the argument references imply
+       -> complete the code-owned interfaces
+       -> validate
+       -> collect
+  -> render the accepted graph
+```
+
+The assembled snapshot is taken before completion for the reason §12.5 gives: what the model wrote,
+what the code derived and what was committed are three different things.
+
+Application collects its faults rather than raising on the first, and a revision with any fault
+produces no graph at all. A partly applied revision would be a plan nobody wrote.
+
+### 12.13 What a local-revision boundary records
+
+Everything §12.7 requires, and each change filed under whoever made it:
+
+| field | what it holds |
+| --- | --- |
+| `empty_revision` | whether the answer was the no-op of §12.11 |
+| `affected_roots` | the computations the model named as regions |
+| `touched_nodes` | the surviving nodes it revised |
+| `removed_nodes` | each removal with its reason: `affected_region`, `region_internal`, `invalidated_information` |
+| `removed_edges` | relations that left with a removed node or a dropped requirement |
+| `replacement_boundary_changes` | positions a replacement inherited |
+| `completion_changes` | §12.10, kept out of interface completion |
+| `id_map` | every previous id or new label, and what it became |
+| `newly_created_then_collected` | information the revision introduced that this same boundary collected |
+| `argument_dependency_changes`, `interface_changes`, `ordering_repairs` | as in §12.7 |
+| `faults` | why application refused, distinct from `parse_errors` and `violations` |
+
+### 12.14 Operational retry
+
+Across thirty-one sequential calls, three returned zero characters, and two of three attempted
+chains ended there. Nothing was generated on those calls, so there was no candidate to be wrong
+about, and a method meant to run for the length of an episode cannot be stopped by a provider
+hiccup.
+
+The updater therefore retries **operational** failures: an empty completion, a timeout, a connection
+error, a 429, a provider 5xx. At most two retries, so at most **three identical attempts**, and the
+first completion that arrives ends it. Every attempt sends the same `ModelCall` — nothing is
+rephrased, nothing is said about the previous failure, no configuration changes — so the attempts
+are independent draws and not a conversation.
+
+Everything else is raised at once. A response whose shape is wrong is a broken adapter. **A revision
+that failed to parse and a graph that failed to validate are never retried**, because asking again
+until one passes would turn one sample into a best-of-three and inflate every acceptance rate in the
+results. Retry sits strictly around the call and cannot observe anything downstream of it.
+
+Each attempt is recorded as an ordinal, an outcome and a detail, and a record is only well formed if
+its attempts run `1..n` with exactly one completion, last. If every attempt fails the call raises and
+**no record is produced at all**: a provider that did not answer is not a compressor that answered
+badly, and the attempts travel on the exception so the run can record the boundary as what it was.
+
+`newly_created_then_collected` is a measurement signal and **not** a violation. Information that a
+revision introduces, produces, and leaves without a surviving consumer has two readings the code
+cannot separate: the call is worth making for its effect and its return value genuinely has no
+consumer, or the model established a result and forgot to connect it to the work that needs it. The
+first is correct pruning and the second is an absorption failure. Since nothing in the graph
+distinguishes them, collection behaves the same way in both cases and the occurrence is listed for
+the recurrent audit to judge.
+
+A refused boundary keeps the previous graph byte-identically, collects nothing, and consumes its
+`delta_h`. The slice is **not** buffered and **not** replayed into the next boundary: a boundary that
+failed to absorb its slice is a real loss and belongs in the results as one, and replaying it would
+give the method an attempt the schedule never granted.
 
 ---
 

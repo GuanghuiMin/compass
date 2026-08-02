@@ -307,3 +307,276 @@ def _violation(item: object) -> tuple[str, str, tuple[str, ...]]:
             or not isinstance(item[1], str) or not isinstance(item[2], list):
         raise ArtifactError(f"record violations: {item!r} is not a code, a message and its nodes")
     return item[0], item[1], tuple(_strings(item[2], "violations"))
+
+
+@dataclass(frozen=True)
+class RevisionRecord:
+    """One boundary under the local-revision updater.
+
+    Every change is filed under who made it. The model's own edits, the removal of regions it named,
+    the completions it declared, and each deterministic step the code took afterwards are separate
+    fields, because a record that pooled them could not answer the only question worth asking of it:
+    what did the model actually get right.
+    """
+    goal: str
+    rules: str
+    delta_h: str
+    previous_snapshot: dict
+    model_call: ModelCall
+    raw_output: str
+    attempts: tuple[tuple[int, str, str], ...]
+    normalizations: tuple[str, ...]
+    parse_errors: tuple[tuple[int, str], ...]
+    empty_revision: bool
+    affected_roots: tuple[str, ...]
+    touched_nodes: tuple[str, ...]
+    removed_nodes: tuple[tuple[str, str], ...]
+    removed_edges: tuple[tuple[str, str, str, str], ...]
+    replacement_boundary_changes: tuple[tuple[str, str, str, str], ...]
+    completion_changes: tuple[tuple[str, str, str], ...]
+    id_map: tuple[tuple[str, str], ...]
+    newly_created_then_collected: tuple[str, ...]
+    argument_dependency_changes: tuple[tuple[str, str, str, str], ...]
+    interface_changes: tuple[tuple[str, str, str, str], ...]
+    ordering_repairs: tuple[tuple[str, str, str, str], ...]
+    faults: tuple[tuple[str, str, tuple[str, ...]], ...]
+    violations: tuple[tuple[str, str, tuple[str, ...]], ...]
+    accepted: bool
+    assembled_snapshot: dict | None
+    resulting_snapshot: dict
+    collected: tuple[str, ...]
+    handover: str
+
+    @property
+    def prompt_sha(self) -> str:
+        return prompt_sha(self.model_call.system)
+
+    def to_dict(self) -> dict:
+        return {
+            "goal": self.goal,
+            "rules": self.rules,
+            "delta_h": self.delta_h,
+            "previous_snapshot": self.previous_snapshot,
+            "model_call": {
+                "system": self.model_call.system,
+                "user": self.model_call.user,
+                "config": [[k, v] for k, v in self.model_call.config],
+            },
+            "prompt_sha": self.prompt_sha,
+            "raw_output": self.raw_output,
+            "attempts": [list(attempt) for attempt in self.attempts],
+            "normalizations": list(self.normalizations),
+            "parse_errors": [[line, message] for line, message in self.parse_errors],
+            "empty_revision": self.empty_revision,
+            "affected_roots": list(self.affected_roots),
+            "touched_nodes": list(self.touched_nodes),
+            "removed_nodes": [list(pair) for pair in self.removed_nodes],
+            "removed_edges": [list(change) for change in self.removed_edges],
+            "replacement_boundary_changes": [list(change) for change
+                                             in self.replacement_boundary_changes],
+            "completion_changes": [list(change) for change in self.completion_changes],
+            "id_map": [list(pair) for pair in self.id_map],
+            "newly_created_then_collected": list(self.newly_created_then_collected),
+            "argument_dependency_changes": [list(change) for change
+                                            in self.argument_dependency_changes],
+            "interface_changes": [list(change) for change in self.interface_changes],
+            "ordering_repairs": [list(change) for change in self.ordering_repairs],
+            "faults": [[code, message, list(nodes)] for code, message, nodes in self.faults],
+            "violations": [[code, message, list(nodes)]
+                           for code, message, nodes in self.violations],
+            "accepted": self.accepted,
+            "assembled_snapshot": self.assembled_snapshot,
+            "resulting_snapshot": self.resulting_snapshot,
+            "collected": list(self.collected),
+            "handover": self.handover,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "RevisionRecord":
+        _exact_keys(raw, set(_REVISION_FIELD_TYPES), "a revision record")
+        for name, expected in _REVISION_FIELD_TYPES.items():
+            if expected is not None and not isinstance(raw[name], expected):
+                raise ArtifactError(f"revision record {name}: expected {_name_of(expected)}, "
+                                    f"got {type(raw[name]).__name__}")
+        for name in ("accepted", "empty_revision"):
+            if isinstance(raw[name], int) and not isinstance(raw[name], bool):
+                raise ArtifactError(f"revision record {name}: expected true or false")
+        call = _call_from_dict(raw["model_call"])
+        if raw["prompt_sha"] != prompt_sha(call.system):
+            raise ArtifactError("revision record prompt_sha does not hash the system message "
+                                "it sits beside")
+        assembled = raw["assembled_snapshot"]
+        if assembled is not None and not isinstance(assembled, dict):
+            raise ArtifactError("revision record assembled_snapshot: expected an object or null")
+
+        _rebuild(raw["previous_snapshot"], "previous_snapshot")
+        resulting = _rebuild(raw["resulting_snapshot"], "resulting_snapshot")
+        if assembled is not None:
+            _rebuild(assembled, "assembled_snapshot")
+
+        from .rendering import render
+        if raw["handover"] != render(resulting):
+            raise ArtifactError("revision record handover is not the rendering of its "
+                                "resulting graph")
+
+        attempts = tuple(_attempt(item) for item in raw["attempts"])
+        _check_attempts(attempts)
+        normalizations = tuple(_strings(raw["normalizations"], "normalizations"))
+        parse_errors = tuple(_parse_error(item) for item in raw["parse_errors"])
+        removed_nodes = tuple(_removal(item) for item in raw["removed_nodes"])
+        removed_edges = tuple(_interface_change(item, "removed_edges")
+                              for item in raw["removed_edges"])
+        boundary = tuple(_interface_change(item, "replacement_boundary_changes")
+                         for item in raw["replacement_boundary_changes"])
+        completion = tuple(_completion_change(item) for item in raw["completion_changes"])
+        id_map = tuple(_pair(item, "id_map") for item in raw["id_map"])
+        stillborn = tuple(_strings(raw["newly_created_then_collected"],
+                                   "newly_created_then_collected"))
+        interface_changes = tuple(_interface_change(item) for item in raw["interface_changes"])
+        argument_changes = tuple(_interface_change(item, "argument_dependency_changes")
+                                 for item in raw["argument_dependency_changes"])
+        ordering_repairs = tuple(_interface_change(item, "ordering_repairs")
+                                 for item in raw["ordering_repairs"])
+        faults = tuple(_violation(item) for item in raw["faults"])
+        violations = tuple(_violation(item) for item in raw["violations"])
+        collected = tuple(_strings(raw["collected"], "collected"))
+        _check_revision_outcome(raw)
+
+        return cls(
+            goal=raw["goal"], rules=raw["rules"], delta_h=raw["delta_h"],
+            previous_snapshot=raw["previous_snapshot"], model_call=call,
+            raw_output=raw["raw_output"], attempts=attempts, normalizations=normalizations,
+            parse_errors=parse_errors, empty_revision=raw["empty_revision"],
+            affected_roots=tuple(_strings(raw["affected_roots"], "affected_roots")),
+            touched_nodes=tuple(_strings(raw["touched_nodes"], "touched_nodes")),
+            removed_nodes=removed_nodes, removed_edges=removed_edges,
+            replacement_boundary_changes=boundary, completion_changes=completion, id_map=id_map,
+            newly_created_then_collected=stillborn,
+            argument_dependency_changes=argument_changes, interface_changes=interface_changes,
+            ordering_repairs=ordering_repairs, faults=faults, violations=violations,
+            accepted=raw["accepted"], assembled_snapshot=assembled,
+            resulting_snapshot=raw["resulting_snapshot"], collected=collected,
+            handover=raw["handover"],
+        )
+
+
+_REVISION_FIELD_TYPES: dict[str, object] = {
+    "goal": str, "rules": str, "delta_h": str, "previous_snapshot": dict,
+    "model_call": dict, "prompt_sha": str, "raw_output": str, "attempts": list,
+    "normalizations": list,
+    "parse_errors": list, "empty_revision": bool, "affected_roots": list, "touched_nodes": list,
+    "removed_nodes": list, "removed_edges": list, "replacement_boundary_changes": list,
+    "completion_changes": list, "id_map": list, "newly_created_then_collected": list,
+    "argument_dependency_changes": list,
+    "interface_changes": list, "ordering_repairs": list, "faults": list, "violations": list,
+    "accepted": bool, "assembled_snapshot": None, "resulting_snapshot": dict,
+    "collected": list, "handover": str,
+}
+
+_REMOVAL_REASONS = ("affected_region", "region_internal", "invalidated_information")
+_COMPLETION_ACTIONS = ("became_available", "producer_removed", "content_replaced",
+                       "provenance_materialized")
+
+
+def _pair(item: object, where: str) -> tuple[str, str]:
+    if not isinstance(item, list) or len(item) != 2 or not all(isinstance(x, str) for x in item):
+        raise ArtifactError(f"revision record {where}: {item!r} is not a pair of names")
+    return item[0], item[1]
+
+
+def _attempt(item: object) -> tuple[int, str, str]:
+    if not isinstance(item, list) or len(item) != 3 or not isinstance(item[0], int) \
+            or isinstance(item[0], bool) or not isinstance(item[1], str) \
+            or not isinstance(item[2], str):
+        raise ArtifactError(f"revision record attempts: {item!r} is not an ordinal, an outcome "
+                            "and a detail")
+    return item[0], item[1], item[2]
+
+
+def _check_attempts(attempts: tuple[tuple[int, str, str], ...]) -> None:
+    """A record only exists when a call returned, so the attempts end in exactly one completion.
+
+    Numbering is checked too. Attempts that skipped an ordinal would be a record of a different
+    sequence of calls than the one that happened, and the point of recording them is to know how
+    often the provider had to be asked twice.
+    """
+    if not attempts:
+        raise ArtifactError("revision record attempts: a record exists, so a call was made")
+    if [ordinal for ordinal, _, _ in attempts] != list(range(1, len(attempts) + 1)):
+        raise ArtifactError("revision record attempts: ordinals are not 1..n in order")
+    outcomes = [outcome for _, outcome, _ in attempts]
+    if outcomes[-1] != "completion":
+        raise ArtifactError("revision record attempts: the last attempt did not complete, "
+                            "and there would be no record if none had")
+    if "completion" in outcomes[:-1]:
+        raise ArtifactError("revision record attempts: a completion is not retried")
+
+
+def _removal(item: object) -> tuple[str, str]:
+    node, reason = _pair(item, "removed_nodes")
+    if reason not in _REMOVAL_REASONS:
+        raise ArtifactError(f"revision record removed_nodes: {reason!r} is not one of "
+                            f"{', '.join(_REMOVAL_REASONS)}")
+    return node, reason
+
+
+def _completion_change(item: object) -> tuple[str, str, str]:
+    if not isinstance(item, list) or len(item) != 3 or not all(isinstance(x, str) for x in item):
+        raise ArtifactError(f"revision record completion_changes: {item!r} is not an action, "
+                            "a node and a detail")
+    if item[0] not in _COMPLETION_ACTIONS:
+        raise ArtifactError(f"revision record completion_changes: {item[0]!r} is not one of "
+                            f"{', '.join(_COMPLETION_ACTIONS)}")
+    return item[0], item[1], item[2]
+
+
+def _check_revision_outcome(raw: dict) -> None:
+    """The same three shapes as a regeneration record, plus the empty revision.
+
+    An empty revision is accepted and changes nothing, so it is the one accepted shape whose
+    resulting graph must equal the previous one and whose change fields must all be empty. Letting
+    a record claim an empty revision alongside recorded work would make the no-op unfalsifiable.
+    """
+    accepted, assembled = raw["accepted"], raw["assembled_snapshot"]
+    parse_errors, faults, violations = raw["parse_errors"], raw["faults"], raw["violations"]
+
+    if raw["empty_revision"]:
+        if parse_errors:
+            raise ArtifactError("revision record says the revision was empty and also lists "
+                                "parse errors")
+        if not accepted:
+            raise ArtifactError("revision record refused an empty revision, which is a no-op")
+        for name in ("affected_roots", "touched_nodes", "removed_nodes", "removed_edges",
+                     "replacement_boundary_changes", "completion_changes",
+                     "argument_dependency_changes", "interface_changes", "ordering_repairs",
+                     "collected", "newly_created_then_collected"):
+            if raw[name]:
+                raise ArtifactError(f"revision record says the revision was empty and records "
+                                    f"{name}")
+        if raw["resulting_snapshot"] != raw["previous_snapshot"]:
+            raise ArtifactError("revision record says the revision was empty and changed the graph")
+        return
+
+    if accepted:
+        if assembled is None:
+            raise ArtifactError("revision record says accepted with nothing assembled")
+        if parse_errors:
+            raise ArtifactError("revision record says accepted and also lists parse errors")
+        if faults:
+            raise ArtifactError("revision record says accepted and also lists faults")
+        if violations:
+            raise ArtifactError("revision record says accepted and also lists violations")
+        return
+
+    if raw["collected"]:
+        raise ArtifactError("revision record collected information from a graph it did not accept")
+    if raw["resulting_snapshot"] != raw["previous_snapshot"]:
+        raise ArtifactError("revision record refused a revision and did not keep the "
+                            "previous graph")
+    if not (parse_errors or faults or violations):
+        raise ArtifactError("revision record refused a revision and gave no reason")
+    if parse_errors and (faults or violations):
+        raise ArtifactError("revision record has parse errors and also reasons that require "
+                            "a parsed revision")
+    if assembled is None and violations:
+        raise ArtifactError("revision record has violations for a graph it never assembled")
