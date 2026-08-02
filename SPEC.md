@@ -1300,6 +1300,48 @@ A boundary prepared but not committed leaves a record under a pending directory 
 discovery skips, and a run that claims to have completed while one is still there is refused when
 read back — that is exactly the shape of a run that stopped between preparing and committing.
 
+### 13A.6 Two clocks, and never the difference between them
+
+An episode runs inside AppWorld's frozen time, and freezegun patches `time.time`, `datetime.now`,
+`time.monotonic` and `time.perf_counter` alike. Measured, not assumed: across a real 0.4s sleep
+inside the context all four report a delta of 0.000, while `clock_gettime` reports 0.400.
+
+The first online run recorded `host_started_at == host_finished_at == 2023-05-18` and an `elapsed_s`
+of −101287824.8, because a duration was taken as a host epoch minus a simulated one. Those are
+different quantities and their difference is not a duration. So **durations come only from
+`CLOCK_MONOTONIC`** and **wall times only from `CLOCK_REALTIME`**, the two are never subtracted from
+one another, and a completed run whose `elapsed_s` is negative or whose host times are missing or
+out of order is refused when read back. A simulated time is recorded, where it is wanted at all,
+under its own name.
+
+### 13A.7 What the provider said, recorded and not interpreted
+
+The first online run's opening boundary was refused for a completion that ended inside an unclosed
+block. Whether the provider stopped early or the model wrote exactly that cannot be decided from
+the text, and the artifact kept nothing else. The provider's own account of each call — response id,
+`finish_reason`, token usage, any incomplete details — is now written down beside it.
+
+**This changes nothing about what is retried.** A non-empty completion is the model's answer, and a
+`finish_reason` is a fact in an artifact rather than an input to §12.14. Whether a truncated
+completion should count as a method refusal, a configuration failure or an operational stop is a
+separate question, and one that has to be settled in advance rather than decided from the case that
+raised it — otherwise any malformed half-written output could be reclassified into a second sample.
+
+Recording wraps the client, not the adapter, so the request is still built by the validated code and
+`max_retries=0` is still the same client's.
+
+### 13A.8 Identity beyond the two commits
+
+Two runs can pin the same two commits and still be different experiments, because the AppWorld
+package and its task data live outside both repositories. A run therefore also records the installed
+AppWorld version, the task id and split, the experiment name, the hash and length of the exact task
+instruction, and the command that produced it.
+
+Manifests carry an `instrumentation` number. The first online run is 1: its timing is wrong and it
+has neither provider metadata nor environment identity. It is a real record and is not edited to
+suit a later schema, so the checks above apply from 2 onwards and a reader is told which
+instrumentation produced a run rather than inferring it from a missing key.
+
 ---
 
 ## 14. What only an audit can decide

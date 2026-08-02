@@ -9,6 +9,7 @@ The model is a stub throughout. What is under test is the state machine around i
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -19,8 +20,9 @@ from future_graph.online import (
     ACCEPTED, EMPTY, REFUSED, LocalRevisionOptimizer, OnlineIntegrationError, continuation_of,
 )
 from future_graph.online_run import (
-    Continuation, RepoIdentity, build_manifest, describe_repo, hashes_of, load_run,
-    openai_version, prepare_online_run, write_json,
+    PROVIDER_CALLS, Continuation, RepoIdentity, build_manifest, describe_repo,
+    describe_response, environment_identity, finish_manifest, hashes_of, host_now, load_run,
+    monotonic_seconds, openai_version, prepare_online_run, recording_adapter, write_json,
 )
 from future_graph.rendering import render
 from future_graph.run import RunError
@@ -447,9 +449,13 @@ def _finished(prepared, boundaries, continuations=0, status="completed"):
         prepared, task_id="042a9fc_1", split="test_normal", window=4096, preserved_turns=1,
         max_steps=30, tasklist={"path": "t.jsonl", "sha256": "0" * 64},
         downstream={"model": "m"}, updater={"model": "u"},
-        hashes=hashes_of("system", "rules", "prompt"))
-    manifest.update({"status": status, "boundaries": boundaries,
-                     "continuations": continuations, "finished_at": "now"})
+        hashes=hashes_of("system", "rules", "prompt"),
+        environment=environment_identity(
+            task_id="042a9fc_1", split="test_normal", instruction="do the thing",
+            experiment_name="x", command=["run", "--task", "042a9fc_1"]),
+        started_monotonic=monotonic_seconds())
+    manifest.update({"boundaries": boundaries, "continuations": continuations})
+    finish_manifest(manifest, status)
     write_json(prepared.manifest_path, manifest, overwrite=True)
     return manifest
 
@@ -520,6 +526,250 @@ def test_a_continuation_that_is_missing_a_field_is_refused():
     del raw["handover_present"]
     with pytest.raises(ArtifactError, match="missing handover_present"):
         Continuation.from_dict(raw)
+
+
+# --------------------------------------------------------------------------- clocks
+
+def test_the_host_clock_and_the_duration_survive_a_frozen_episode(tmp_path, monkeypatch):
+    """The first online run recorded start == finish == 2023-05-18 and an elapsed of -101287824.8,
+    because a host epoch was reduced by a simulated one. AppWorld freezes `time.time`,
+    `datetime.now`, `monotonic` and `perf_counter` alike; only `clock_gettime` still moves."""
+    freezegun = pytest.importorskip("freezegun")
+    prepared = _clean_run(tmp_path, monkeypatch)
+    with freezegun.freeze_time("2023-05-18 05:00:00"):
+        started = monotonic_seconds()
+        manifest = build_manifest(
+            prepared, task_id="t", split="s", window=4096, preserved_turns=1, max_steps=30,
+            tasklist={}, downstream={}, updater={}, hashes=hashes_of("a", "b", "c"),
+            environment=environment_identity(task_id="t", split="s", instruction="i",
+                                             experiment_name="e", command=["c"]),
+            started_monotonic=started)
+        import time as _time
+        _time.sleep(0.05)
+        finish_manifest(manifest, "completed")
+
+    assert manifest["elapsed_s"] >= 0
+    assert manifest["elapsed_s"] < 60
+    assert not manifest["host_started_at"].startswith("2023-05-18")
+    assert not manifest["host_finished_at"].startswith("2023-05-18")
+    assert "started_at" not in manifest and "finished_at" not in manifest
+
+
+def test_a_duration_is_never_a_host_epoch_minus_a_simulated_one(tmp_path, monkeypatch):
+    freezegun = pytest.importorskip("freezegun")
+    prepared = _clean_run(tmp_path, monkeypatch)
+    started = monotonic_seconds()                       # outside the freeze, as a real run does
+    manifest = build_manifest(
+        prepared, task_id="t", split="s", window=4096, preserved_turns=1, max_steps=30,
+        tasklist={}, downstream={}, updater={}, hashes=hashes_of("a", "b", "c"),
+        environment=environment_identity(task_id="t", split="s", instruction="i",
+                                         experiment_name="e", command=["c"]),
+        started_monotonic=started)
+    with freezegun.freeze_time("2023-05-18 05:00:00"):  # and finished inside it, as it did
+        finish_manifest(manifest, "completed")
+    assert manifest["elapsed_s"] >= 0
+
+
+def test_a_completed_run_with_a_negative_duration_is_refused(tmp_path, monkeypatch):
+    prepared = _clean_run(tmp_path, monkeypatch)
+    manifest = _finished(prepared, boundaries=0)
+    manifest["elapsed_s"] = -101287824.8
+    write_json(prepared.manifest_path, manifest, overwrite=True)
+    with pytest.raises(ArtifactError, match="negative time"):
+        load_run(prepared.run_dir)
+
+
+def test_a_completed_run_that_finished_before_it_started_is_refused(tmp_path, monkeypatch):
+    prepared = _clean_run(tmp_path, monkeypatch)
+    manifest = _finished(prepared, boundaries=0)
+    manifest["host_started_at"], manifest["host_finished_at"] = \
+        manifest["host_finished_at"], manifest["host_started_at"]
+    manifest["host_started_at"] = "2030-01-01T00:00:00+00:00"
+    write_json(prepared.manifest_path, manifest, overwrite=True)
+    with pytest.raises(ArtifactError, match="finished before it started"):
+        load_run(prepared.run_dir)
+
+
+@pytest.mark.parametrize("field", ["host_started_at", "host_finished_at", "elapsed_s"])
+def test_a_completed_run_missing_a_timing_field_is_refused(tmp_path, monkeypatch, field):
+    prepared = _clean_run(tmp_path, monkeypatch)
+    manifest = _finished(prepared, boundaries=0)
+    manifest[field] = None
+    write_json(prepared.manifest_path, manifest, overwrite=True)
+    with pytest.raises(ArtifactError, match=field):
+        load_run(prepared.run_dir)
+
+
+def test_the_first_online_run_still_reads_back_and_says_its_timing_cannot_be_trusted():
+    """It is a real record of a real run and is not edited to suit a later schema. What it gets
+    instead is a reader that knows which instrumentation produced it."""
+    run_dir = Path(__file__).resolve().parents[1] / "artifacts" / "online"
+    runs = sorted(p for p in run_dir.glob("*") if (p / "manifest.json").exists()) \
+        if run_dir.is_dir() else []
+    if not runs:
+        pytest.skip("no online run has been committed yet")
+    first = load_run(runs[0])
+    assert first.manifest["status"] == "completed"
+    if first.instrumentation == 1:
+        assert not first.timing_is_trustworthy
+        assert first.manifest["elapsed_s"] < 0          # the defect, preserved as it happened
+    else:
+        assert first.timing_is_trustworthy
+
+
+def test_an_unfinished_run_is_not_held_to_the_completed_checks(tmp_path, monkeypatch):
+    prepared = _clean_run(tmp_path, monkeypatch)
+    manifest = _finished(prepared, boundaries=0, status="integration_failure")
+    manifest["elapsed_s"] = None
+    write_json(prepared.manifest_path, manifest, overwrite=True)
+    assert load_run(prepared.run_dir).manifest["status"] == "integration_failure"
+
+
+# --------------------------------------------------------------------------- provider metadata
+
+class FakeResponse:
+    def __init__(self, finish_reason="stop"):
+        self.id = "resp-1"
+        self.model = "minimax-m3"
+        self.created = 1
+        self.system_fingerprint = "fp"
+        self.choices = [type("C", (), {"finish_reason": finish_reason,
+                                       "message": type("M", (), {"content": "text"})()})()]
+        self.usage = type("U", (), {"prompt_tokens": 10, "completion_tokens": 3,
+                                    "total_tokens": 13, "completion_tokens_details": None})()
+
+
+def test_the_providers_account_of_a_call_is_written_down(tmp_path):
+    described = describe_response(FakeResponse(finish_reason="length"))
+    assert described["finish_reason"] == "length"
+    assert described["response_id"] == "resp-1"
+    assert described["completion_tokens"] == 3
+    assert described["total_tokens"] == 13
+
+
+def test_a_response_that_carries_none_of_it_is_still_describable():
+    described = describe_response(object())
+    assert set(described) >= {"response_id", "finish_reason", "completion_tokens"}
+    assert all(v is None for v in described.values())
+
+
+def test_recording_wraps_the_client_and_not_the_request(monkeypatch):
+    """The request is still built by the validated adapter, so there is no second copy of it to
+    drift, and `max_retries=0` is the same client's."""
+    from future_graph import adapter as adapter_module
+
+    sent = {}
+
+    class Completions:
+        def create(self, **kwargs):
+            sent.update(kwargs)
+            return FakeResponse()
+
+    class Client:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": Completions()})()
+            self.max_retries = 0
+
+    base = adapter_module.Adapter(client=Client(), model="minimax-m3")
+    recording, calls = recording_adapter(base)
+    text = recording(ModelCall(system="sys", user="usr", config=(("temperature", 0.0),)))
+
+    assert text == "text"
+    assert sent["model"] == "minimax-m3"
+    assert sent["messages"] == [{"role": "system", "content": "sys"},
+                                {"role": "user", "content": "usr"}]
+    assert sent["temperature"] == 0.0
+    assert recording.client.max_retries == 0           # reached through the pass-through
+    assert len(calls) == 1 and calls[0]["finish_reason"] == "stop"
+    assert calls[0]["elapsed_s"] >= 0
+
+
+def test_a_failed_call_is_recorded_as_a_failed_call():
+    from future_graph import adapter as adapter_module
+
+    class Completions:
+        def create(self, **kwargs):
+            raise RuntimeError("the provider hung up")
+
+    class Client:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": Completions()})()
+
+    recording, calls = recording_adapter(adapter_module.Adapter(client=Client(), model="m"))
+    with pytest.raises(RuntimeError):
+        recording(ModelCall(system="s", user="u"))
+    assert len(calls) == 1 and "hung up" in calls[0]["error"]
+
+
+def test_recording_does_not_change_what_counts_as_operational():
+    """Metadata is written down and interpreted nowhere. A completion that ends mid-block is still
+    the model's answer, and deciding otherwise from a finish_reason is a separate question."""
+    from future_graph.retry import is_operational
+
+    class Truncated(Exception):
+        pass
+
+    assert not is_operational(Truncated())
+    source = (Path(__file__).resolve().parents[1]
+              / "src" / "future_graph" / "online_run.py").read_text()
+    assert "finish_reason" in source
+    for word in ("is_operational", "ExhaustedAttempts", "EmptyModelCompletion"):
+        assert word not in source
+
+
+def test_provider_calls_must_match_the_attempts_that_were_made(tmp_path, monkeypatch):
+    prepared = _clean_run(tmp_path, monkeypatch)
+    opt = LocalRevisionOptimizer(
+        goal="g", rules="r", model=stub(FIRST), count_tokens=lambda t: len(t.split()),
+        window=1, boundaries_dir=prepared.boundaries_dir, pending_dir=prepared.pending_dir)
+    opt.process(task="t", history="one")
+    opt.commit_pending()
+    write_json(prepared.run_dir / PROVIDER_CALLS, [{"finish_reason": "stop"},
+                                                   {"finish_reason": "stop"}], overwrite=True)
+    _finished(prepared, boundaries=1)
+    with pytest.raises(ArtifactError, match="2 provider calls and 1 attempts"):
+        load_run(prepared.run_dir)
+
+
+# --------------------------------------------------------------------------- task identity
+
+def test_the_environment_identity_names_the_installation_and_the_task_text():
+    identity = environment_identity(task_id="042a9fc_1", split="test_normal",
+                                    instruction="update the playlist",
+                                    experiment_name="fg_run_042a9fc_1",
+                                    command=["python", "runner.py", "--task", "042a9fc_1"])
+    assert identity["task_id"] == "042a9fc_1"
+    assert identity["instruction_sha256"] == \
+        __import__("hashlib").sha256(b"update the playlist").hexdigest()
+    assert identity["instruction_bytes"] == 19
+    assert identity["command"][-1] == "042a9fc_1"
+    assert "appworld_version" in identity          # None where the package is not installed
+
+
+def test_a_different_task_text_is_a_different_identity():
+    first = environment_identity(task_id="t", split="s", instruction="do A",
+                                 experiment_name="e", command=[])
+    second = environment_identity(task_id="t", split="s", instruction="do B",
+                                  experiment_name="e", command=[])
+    assert first["instruction_sha256"] != second["instruction_sha256"]
+
+
+def test_a_completed_run_without_environment_identity_is_refused(tmp_path, monkeypatch):
+    prepared = _clean_run(tmp_path, monkeypatch)
+    manifest = _finished(prepared, boundaries=0)
+    del manifest["environment"]
+    write_json(prepared.manifest_path, manifest, overwrite=True)
+    with pytest.raises(ArtifactError, match="environment identity is missing"):
+        load_run(prepared.run_dir)
+
+
+def test_a_manifest_whose_environment_names_another_task_is_refused(tmp_path, monkeypatch):
+    prepared = _clean_run(tmp_path, monkeypatch)
+    manifest = _finished(prepared, boundaries=0)
+    manifest["environment"]["task_id"] = "some_other_task"
+    write_json(prepared.manifest_path, manifest, overwrite=True)
+    with pytest.raises(ArtifactError, match="different task"):
+        load_run(prepared.run_dir)
 
 
 def test_the_handover_check_is_a_reading_of_the_messages_that_were_sent():
