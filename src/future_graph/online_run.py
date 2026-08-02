@@ -33,15 +33,21 @@ METHOD = "future_graph_v1"
 OPERATOR = "local_revision"
 
 BOUNDARIES = "boundaries"
+ATTEMPTS = "attempts"
 CONTINUATIONS = "continuations"
 PENDING = ".pending"
 PROVIDER_CALLS = "provider_calls.json"
+SLICE_LEDGER = "slice_ledger.json"
 
 # 1 is the first online smoke, whose timing fields are wrong and whose provider metadata and
 # environment identity were never captured. It is a real run and stays readable exactly as it was
 # written; the checks that would refuse it apply from 2 onwards, and a reader is told which it has
 # rather than being left to infer it from a missing key.
+#
+# 3 is future_graph_v1r, where a refusal is a revision attempt that never became a boundary. It
+# separates three indices that 1 and 2 could conflate, and reconciles them on read.
 INSTRUMENTATION = 2
+INSTRUMENTATION_RETAIN = 3
 
 
 # --------------------------------------------------------------------------- clocks
@@ -429,10 +435,17 @@ class OnlineRun:
     boundaries: tuple[RevisionRecord, ...]
     continuations: tuple[Continuation, ...]
     provider_calls: tuple[dict, ...] = ()
+    attempts: tuple[RevisionRecord, ...] = ()
+    slice_ledger: dict | None = None
 
     @property
     def instrumentation(self) -> int:
         return int(self.manifest.get("instrumentation", 1))
+
+    @property
+    def retains_refused_slices(self) -> bool:
+        """`future_graph_v1r`: a refusal keeps its source. Runs below 3 consumed it."""
+        return self.instrumentation >= INSTRUMENTATION_RETAIN
 
     @property
     def timing_is_trustworthy(self) -> bool:
@@ -475,6 +488,104 @@ def _check_environment(manifest: dict) -> None:
             raise ArtifactError(f"online manifest environment: missing {name}")
     if environment["task_id"] != manifest["task_id"]:
         raise ArtifactError("online manifest: the environment names a different task than the run")
+
+
+def _check_counts(manifest: dict, boundaries: tuple[RevisionRecord, ...],
+                  attempts: tuple[RevisionRecord, ...], calls: tuple[dict, ...]) -> None:
+    """Three indices, reconciled rather than trusted.
+
+    A committed boundary, a revision attempt and a provider attempt are different things, and the
+    whole point of `future_graph_v1r` is that a refusal advances the second without the first. A
+    manifest whose counts do not add up would let a refusal be read as a boundary, which is exactly
+    the confusion this version exists to remove.
+    """
+    for name in ("committed_boundaries", "revision_attempts", "refused_revision_attempts",
+                 "provider_attempts", "unabsorbed_slices"):
+        if name not in manifest:
+            raise ArtifactError(f"online manifest: instrumentation "
+                                f"{INSTRUMENTATION_RETAIN} records {name}")
+    if manifest["committed_boundaries"] != len(boundaries):
+        raise ArtifactError(f"online manifest counts {manifest['committed_boundaries']} committed "
+                            f"boundaries and {len(boundaries)} are on disk")
+    if manifest["refused_revision_attempts"] != len(attempts):
+        raise ArtifactError(f"online manifest counts {manifest['refused_revision_attempts']} "
+                            f"refused revision attempts and {len(attempts)} are on disk")
+    if manifest["revision_attempts"] < len(boundaries) + len(attempts):
+        raise ArtifactError(
+            f"online manifest counts {manifest['revision_attempts']} revision attempts, fewer "
+            f"than the {len(boundaries)} committed and {len(attempts)} refused ones on disk")
+    expected = sum(len(r.attempts) for r in boundaries) + sum(len(r.attempts) for r in attempts)
+    if calls and len(calls) != expected:
+        raise ArtifactError(f"online run recorded {len(calls)} provider attempts and "
+                            f"{expected} across its boundaries and refused attempts")
+    if manifest["provider_attempts"] != expected:
+        raise ArtifactError(f"online manifest counts {manifest['provider_attempts']} provider "
+                            f"attempts and the records hold {expected}")
+    for record in attempts:
+        if record.accepted:
+            raise ArtifactError("a record under attempts/ is accepted; a refusal never commits "
+                                "and an accepted transition is a boundary")
+
+
+def _check_slice_ledger(ledger: dict, attempts: tuple[RevisionRecord, ...],
+                        manifest: dict) -> None:
+    """Every retained byte accounted for: never deleted, never duplicated, never resubmitted flat.
+
+    These are the properties the diagnostic claims about retention, so they are verified on read
+    rather than asserted in a report.
+    """
+    slices = ledger.get("slices")
+    if not isinstance(slices, list):
+        raise ArtifactError(f"{SLICE_LEDGER}: expected a list of slices")
+    if len(slices) != len(attempts):
+        raise ArtifactError(f"{SLICE_LEDGER} holds {len(slices)} slices and {len(attempts)} "
+                            "refused revision attempts are on disk")
+
+    seen: set[str] = set()
+    unabsorbed = 0
+    for entry in slices:
+        for name in ("slice_id", "origin_revision_attempt", "sha256", "bytes",
+                     "included_in_revision_attempts", "included_at_offset",
+                     "absorbed_by_revision_attempt", "unabsorbed_at_task_end"):
+            if name not in entry:
+                raise ArtifactError(f"{SLICE_LEDGER}: a slice is missing {name}")
+        if entry["sha256"] in seen:
+            raise ArtifactError(f"{SLICE_LEDGER}: {entry['slice_id']} repeats a slice already "
+                                "recorded; an identical resubmission is not a new attempt")
+        seen.add(entry["sha256"])
+
+        included = entry["included_in_revision_attempts"]
+        offsets = entry["included_at_offset"]
+        if len(included) != len(offsets):
+            raise ArtifactError(f"{SLICE_LEDGER}: {entry['slice_id']} has {len(included)} "
+                                f"inclusions and {len(offsets)} offsets")
+        if len(set(included)) != len(included):
+            raise ArtifactError(f"{SLICE_LEDGER}: {entry['slice_id']} is recorded twice in one "
+                                "revision attempt, which would be duplicated history")
+        if included and included[0] != entry["origin_revision_attempt"]:
+            raise ArtifactError(f"{SLICE_LEDGER}: {entry['slice_id']} first appears in attempt "
+                                f"{included[0]} and originates in "
+                                f"{entry['origin_revision_attempt']}")
+
+        absorbed = entry["absorbed_by_revision_attempt"]
+        if absorbed is None:
+            if not entry["unabsorbed_at_task_end"]:
+                raise ArtifactError(f"{SLICE_LEDGER}: {entry['slice_id']} was neither absorbed "
+                                    "nor marked unabsorbed at task end")
+            unabsorbed += 1
+        else:
+            if entry["unabsorbed_at_task_end"]:
+                raise ArtifactError(f"{SLICE_LEDGER}: {entry['slice_id']} is both absorbed and "
+                                    "unabsorbed")
+            if entry.get("absorbed_by_boundary") is None:
+                raise ArtifactError(f"{SLICE_LEDGER}: {entry['slice_id']} was absorbed by a "
+                                    "revision attempt that committed no boundary")
+            if absorbed not in included:
+                raise ArtifactError(f"{SLICE_LEDGER}: {entry['slice_id']} was absorbed by attempt "
+                                    f"{absorbed}, which never contained it")
+    if unabsorbed != manifest["unabsorbed_slices"]:
+        raise ArtifactError(f"online manifest counts {manifest['unabsorbed_slices']} unabsorbed "
+                            f"slices and the ledger holds {unabsorbed}")
 
 
 def _check_provider_calls(manifest: dict, calls: tuple[dict, ...],
@@ -535,10 +646,31 @@ def load_run(run_dir: Path) -> OnlineRun:
             raise ArtifactError(f"{PROVIDER_CALLS}: expected a list of calls")
         calls = tuple(raw)
 
-    if manifest["status"] == "completed" and int(manifest.get("instrumentation", 1)) >= 2:
+    attempts: list[RevisionRecord] = []
+    if (run_dir / ATTEMPTS).is_dir():
+        for path in sorted((run_dir / ATTEMPTS).glob("attempt_*.json")):
+            if path.name.endswith(".identity.json"):
+                continue
+            attempts.append(RevisionRecord.from_dict(
+                json.loads(path.read_text(encoding="utf-8"))))
+
+    ledger = None
+    if (run_dir / SLICE_LEDGER).exists():
+        ledger = json.loads((run_dir / SLICE_LEDGER).read_text(encoding="utf-8"))
+
+    instrumentation = int(manifest.get("instrumentation", 1))
+    if manifest["status"] == "completed" and instrumentation >= 2:
         _check_timing(manifest)
         _check_environment(manifest)
-        _check_provider_calls(manifest, calls, tuple(boundaries))
+        if instrumentation >= INSTRUMENTATION_RETAIN:
+            _check_counts(manifest, tuple(boundaries), tuple(attempts), calls)
+            if ledger is None:
+                raise ArtifactError(f"instrumentation {INSTRUMENTATION_RETAIN} requires "
+                                    f"{SLICE_LEDGER}")
+            _check_slice_ledger(ledger, tuple(attempts), manifest)
+        else:
+            _check_provider_calls(manifest, calls, tuple(boundaries))
 
     return OnlineRun(manifest=manifest, repos=repos, boundaries=tuple(boundaries),
-                     continuations=tuple(continuations), provider_calls=calls)
+                     continuations=tuple(continuations), provider_calls=calls,
+                     attempts=tuple(attempts), slice_ledger=ledger)

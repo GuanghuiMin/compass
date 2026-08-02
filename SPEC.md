@@ -1344,6 +1344,103 @@ instrumentation produced a run rather than inferring it from a missing key.
 
 ---
 
+## 13B. `future_graph_v1r`: a refusal keeps its source
+
+A second method version, not a correction applied to the first. Both are runnable, and every
+artifact says which produced it.
+
+```text
+future_graph_v1    a refused transition consumes its source slice
+future_graph_v1r   a refused transition retains its source slice until a later committed
+                   transition absorbs it
+```
+
+§13A.2 describes `future_graph_v1` and stays as written. It was decided on the reasoning that
+leaving history uncompacted after a refusal would hand the method a full-context advantage exactly
+where its updater failed. The six-task diagnostic contradicted it: three of four graph-specific
+failures were state loss following an early refusal, and `83a7951_3` lost the credentials, the
+login, the group list, the expense list and the Venmo transactions across three consecutive
+refusals against an empty graph, receiving `NOTHING REMAINS` each time.
+
+The rule was wrong about what a refusal establishes. It establishes that the system could not prove
+a graph update valid. It does not establish that the slice held nothing worth keeping. Consuming it
+anyway is a transaction that rolled back and deleted its own source log.
+
+### 13B.1 The invariant
+
+**Source is consumed only by a committed transition.**
+
+```text
+accepted non-empty   commit the graph, splice the handover, consume the slice
+accepted empty       preserve the graph, perform the host's splice, consume the slice
+refused              preserve the graph and the host's session byte-identically,
+                     retain the slice, and let the agent act before asking again
+```
+
+Everything else is `future_graph_v1` reached through `future_graph_v1` code: the grammar, prompt,
+parser, normalizations, crossing accounting, validator, retry policy, rendering, and the accepted
+and empty transitions. One variable moves, so the diagnostic can attribute what it measures.
+
+### 13B.2 How a refusal avoids the splice
+
+`MemoryManager.optimize_history` performs no mutation before it calls the optimizer: it reads the
+preserved turns, renders the pending history and computes an index, and assigns
+`prev_history_summary` only after the splice. So raising from `process` leaves the host exactly as
+it was, and **ACON is not modified at all**. The refusal signal is an exception, and the host's own
+control flow does the rest.
+
+Retention then follows from the host, not from this system: the session was never reset, so the
+next rendered interval is the refused one plus the turns since. The adapter never concatenates a
+slice. It verifies, before sending anything, that the new interval has the retained one as an exact
+byte prefix appearing exactly once at offset zero, is strictly longer, and has a new action and
+observation after it. A failure there is an integration failure and stops the run; it is never
+repaired by prepending the old slice, because a run that assembled its own interval would be
+measuring its own concatenation.
+
+### 13B.3 Three indices, never one word
+
+| index | advances |
+| --- | --- |
+| committed boundary | only after an accepted or accepted-empty transition is spliced and committed |
+| revision attempt | for every updater invocation that parsed and applied into a record, refusals included |
+| provider attempt | one to three per revision attempt, under the unchanged retry policy of §12.14 |
+
+A refused revision may reach the updater again only at a later agent step, inside a strictly longer
+interval. That is a new revision attempt, not a retry, and the retry policy is untouched.
+
+Refused records live in `attempts/`, never in `boundaries/`. A completed instrumentation-3 run
+fails to load unless `committed_boundaries`, `revision_attempts`, `refused_revision_attempts`,
+`provider_attempts` and `unabsorbed_slices` reconcile with what is on disk.
+
+### 13B.4 The slice ledger
+
+Every retained slice is recorded with its hash, size, the attempts it appeared in and at what
+offset, and what eventually consumed it. On read the loader requires that each slice appears
+exactly once in each later submission, that no submission repeats the previous one, that each
+absorbed slice has exactly one consuming committed transition, and that each unabsorbed slice is
+named at task end. Those are the properties retention claims, so they are verified rather than
+asserted.
+
+**An empty revision that absorbs a retained slice is recorded separately.** An empty revision says
+the slice changed nothing the state has to carry, and that is exactly the claim to be sceptical of
+when the slice is one a revision was already refused for. It is a candidate state-loss mechanism in
+its own right and the diagnostic must not settle it by assumption.
+
+### 13B.5 The cost is measured, not hidden
+
+A retained slice leaves the live context above the 4096 trigger, so the trigger re-fires on the
+following step and a refusal chain can mean one updater call per agent step. Retained bytes and
+tokens, prompt size, the amount above the trigger, the steps spent unabsorbed and the number of
+updater calls carrying refused history are all recorded with the same deterministic tokenizer the
+trigger uses. Provider-reported usage is recorded separately and never fills a gap in it, because
+it is absent often enough that an accounting built on it would have holes exactly where a retained
+interval is largest.
+
+If the method only works by holding most of the episode, that is a failure to compress and is to be
+reported as one.
+
+---
+
 ## 14. What only an audit can decide
 
 Code cannot decide, and must not appear to decide:
