@@ -38,6 +38,10 @@ EXPECTED_COUNTS = {"042a9fc_3": 33, "6b6ca61_2": 50, "6f4b9a5_3": 50, "83a7951_2
 PACKET_KEYS = {"packet_id", "goal", "rules", "prefix"}
 STEP_KEYS = {"reasoning", "code", "observation"}
 
+# The commit whose tree holds the 197 packets. Recorded so a manifest can be traced to the corpus
+# it describes without naming any local path.
+PACKET_CORPUS_COMMIT = "d23271f02dc6060e8cd6195dc95f9f76e5e5f6d7"
+
 
 class BuildError(RuntimeError):
     """A precondition of the build that does not hold. Nothing is written."""
@@ -186,17 +190,23 @@ def build(source_dir: Path, secret_file: Path, key_out: Path, out_dir: Path = OU
         "per_episode_counts": EXPECTED_COUNTS,
         "decision_point": ("after a recorded step's observation and before the next action; "
                            "these episodes contain no user-message events"),
+        # Neither the secret nor the mapping is located here. This manifest travels with the packets
+        # to whoever annotates them, and a manifest that says where the unblinding material lives is
+        # not a blinded bundle.
         "blinding": {"scheme": "HMAC-SHA256(secret, canonical_id) truncated to 32 hex characters",
                      "canonical_id": "{episode}:{step}",
-                     "secret_location": str(secret_path),
-                     "key_location": str(key_path),
                      "key_sha256": sha(key_body.encode("utf-8")),
                      "note": ("method-output-blinded, not task-blinded: the goal, rules and "
                               "trajectory may still reveal the task")},
-        "source": {"path": str(source_dir),
-                   "episode_file_sha256": {e["id"]: e["episode_file_sha256"]
+        "source": {"episode_file_sha256": {e["id"]: e["episode_file_sha256"]
                                            for e in preflight["inputs"]["episodes"]},
-                   "note": "the trajectory source is not a git repository and has no commit"},
+                   "note": ("identified by content hash; the trajectory source is not a git "
+                            "repository and its local path is deliberately not recorded")},
+        "packet_corpus_commit": PACKET_CORPUS_COMMIT,
+        "builder_sha256": sha(Path(__file__).resolve().read_bytes()),
+        "builder_note": ("the hash is of the builder in the commit carrying this manifest; the "
+                         "packets were produced at packet_corpus_commit, by a builder differing "
+                         "only in which fields this manifest holds"),
         "rules_sha256": {e["id"]: e["rules_sha256"] for e in preflight["inputs"]["episodes"]},
         "input_manifest_sha256": preflight["input_manifest_sha256"],
         "control_selection": {
@@ -226,8 +236,8 @@ def main(argv: list[str] | None = None) -> int:
     sizes = sorted(p["bytes"] for p in manifest["packets"])
     print(f"wrote {manifest['packet_count']} packets, {sum(sizes)} bytes total")
     print(f"packet bytes: min {sizes[0]}, median {sizes[len(sizes) // 2]}, max {sizes[-1]}")
-    print(f"mapping at {manifest['blinding']['key_location']}, "
-          f"sha256 {manifest['blinding']['key_sha256']}")
+    # Printed for the operator running the build, never written into the manifest.
+    print(f"mapping at {args.key_out.resolve()}, sha256 {manifest['blinding']['key_sha256']}")
     return 0
 
 

@@ -220,6 +220,43 @@ def test_the_manifest_carries_no_mapping(built):
     assert manifest["blinding"]["key_sha256"]
 
 
+def test_the_manifest_does_not_say_where_the_unblinding_material_is(built):
+    """It travels with the packets, and a bundle that names the key location is not blinded."""
+    _, _, manifest, _ = built
+    assert "secret_location" not in manifest["blinding"]
+    assert "key_location" not in manifest["blinding"]
+    assert manifest["blinding"]["key_sha256"]
+
+
+def test_the_manifest_holds_no_local_path(built):
+    _, _, manifest, _ = built
+    assert "path" not in manifest["source"]
+    blob = json.dumps(manifest, ensure_ascii=False)
+    for fragment in ("/workspace", "/tmp", "/mnt", "compass_v2_diagnostic_KEY",
+                     "blinding_secret"):
+        assert fragment not in blob
+
+
+def test_the_manifest_names_the_corpus_commit_and_the_builder(built):
+    _, _, manifest, _ = built
+    assert manifest["packet_corpus_commit"] == B.PACKET_CORPUS_COMMIT
+    builder = (Path(__file__).resolve().parents[1] / "scripts"
+               / "build_diagnostic_packets.py").read_bytes()
+    assert manifest["builder_sha256"] == hashlib.sha256(builder).hexdigest()
+    assert "packet_corpus_commit" in manifest["builder_note"]
+
+
+def test_the_committed_corpus_is_the_one_the_committed_manifest_describes():
+    """Against the real inputs, not the fixture: sealing must not have moved a byte."""
+    manifest = json.loads((REPO / "inputs" / "diagnostic" / "manifest.json").read_text())
+    assert manifest["packet_count"] == 197
+    for entry in manifest["packets"]:
+        body = (REPO / "inputs" / "diagnostic" / "packets"
+                / f"{entry['packet_id']}.json").read_bytes()
+        assert hashlib.sha256(body).hexdigest() == entry["sha256"]
+        assert len(body) == entry["bytes"]
+
+
 def test_every_packet_hash_in_the_manifest_matches_the_file(built):
     _, out, manifest, _ = built
     for entry in manifest["packets"]:
