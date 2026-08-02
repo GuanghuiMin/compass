@@ -102,7 +102,7 @@ def regenerate_graph(goal: str, rules: str, previous: StateGraph, delta_h: str,
 
     if outcome.graph is None:
         graph, violations, collected = previous, (), ()
-        interface_changes, argument_changes = (), ()
+        interface_changes, argument_changes, ordering_repairs = (), (), ()
     else:
         replacement = replace(previous, outcome.graph)
         graph = replacement.graph
@@ -112,6 +112,8 @@ def regenerate_graph(goal: str, rules: str, previous: StateGraph, delta_h: str,
                                   for c in replacement.interface_changes)
         argument_changes = tuple((c.action, c.source, c.relation.value, c.target)
                                  for c in replacement.argument_dependency_changes)
+        ordering_repairs = tuple((c.action, c.source, c.relation.value, c.target)
+                                 for c in replacement.ordering_repairs)
 
     record = RegenerationRecord(
         goal=goal, rules=rules, delta_h=delta_h, previous_snapshot=previous_snapshot,
@@ -121,6 +123,7 @@ def regenerate_graph(goal: str, rules: str, previous: StateGraph, delta_h: str,
         parsed_candidate_snapshot=candidate_snapshot,
         interface_changes=interface_changes,
         argument_dependency_changes=argument_changes,
+        ordering_repairs=ordering_repairs,
         violations=violations,
         accepted=outcome.graph is not None and not violations,
         resulting_snapshot=graph.to_snapshot(), collected=collected, handover=render(graph),

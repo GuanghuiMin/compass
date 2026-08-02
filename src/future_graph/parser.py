@@ -23,8 +23,9 @@ from .protocol import (
     END_COMPUTATION, END_GRAPH, END_INFO, EDGE, INFORMATION_FIELDS,
 )
 from .schema import (
-    ComputationNode, ContractPayload, InformationKind, InformationNode, InformationReference,
-    ListPayload, MappingPayload, Relation, RuntimeReferencePayload, ScalarPayload, SchemaError,
+    ComputationNode, ContractPayload, ENDPOINTS, EntityType, InformationKind, InformationNode,
+    InformationReference, ListPayload, MappingPayload, Relation, RuntimeReferencePayload,
+    ScalarPayload, SchemaError,
 )
 from .state_graph import StateGraph
 
@@ -34,8 +35,15 @@ STRUCTURAL_WORDS = frozenset({BEGIN_GRAPH, END_GRAPH, BEGIN_INFO, END_INFO, BEGI
 SINGLETON_FIELDS = frozenset({"kind", "available", "description", "operation", "payload-type",
                               "value", "runtime-name", "contract-operation"})
 
+# The statements that can only appear at the top level, and therefore prove that a block above
+# them has ended. A blank line does not: blank lines are discarded as surface before this runs, so
+# they are not a boundary anything could rely on.
+TOP_LEVEL = frozenset({BEGIN_INFO, BEGIN_COMPUTATION, EDGE, END_GRAPH, BEGIN_GRAPH})
+
 NORMALIZATIONS = (
     "markdown fence",
+    "block terminator",
+    "edge direction",
     "indentation",
     "blank line",
     "structural keyword case",
@@ -180,51 +188,61 @@ def _read_blocks(lines: list[tuple[int, str]], reader: _Reader) -> None:
     for number, text in lines:
         head = _keyword(text.split()[0], reader, number)
 
-        if current is None:
-            if head == BEGIN_GRAPH:
+        if current is not None:
+            if head in (END_INFO, END_COMPUTATION):
+                expected = END_INFO if current.kind == "info" else END_COMPUTATION
+                if head != expected:
+                    reader.fail(number,
+                                f"{current.node_id} is closed by {head}, expected {expected}")
                 _arity(head, text, number, reader)
-                if seen_begin:
-                    reader.fail(number, f"a second {BEGIN_GRAPH}")
-                seen_begin = True
+                reader.blocks.append(current)
+                current = None
                 continue
-            if head == END_GRAPH:
-                _arity(head, text, number, reader)
-                if seen_end:
-                    reader.fail(number, f"a second {END_GRAPH}")
-                seen_end = True
+            if head in TOP_LEVEL:
+                # A new top-level statement proves the block before it ended, so it is closed here
+                # rather than losing the graph over a missing terminator. The line is then read
+                # again below as what it is: closing a block must not swallow the statement that
+                # showed the block was over.
+                reader.note("block terminator", number,
+                            f"{current.node_id} closed by {head}")
+                reader.blocks.append(current)
+                current = None
+            else:
+                _read_field(current, text, number, reader)
                 continue
-            if not seen_begin:
-                reader.fail(number, f"text before {BEGIN_GRAPH}: {text!r}")
-                continue
-            if seen_end:
-                reader.fail(number, f"text after {END_GRAPH}: {text!r}")
-                continue
-            if head in (BEGIN_INFO, BEGIN_COMPUTATION):
-                current = _open_block(head, text, number, reader)
-                continue
-            if head == EDGE:
-                _read_edge(text, number, reader)
-                continue
-            reader.fail(number, f"{text.split()[0]!r} is not a known statement")
-            continue
 
-        if head in (END_INFO, END_COMPUTATION):
-            expected = END_INFO if current.kind == "info" else END_COMPUTATION
-            if head != expected:
-                reader.fail(number, f"{current.node_id} is closed by {head}, expected {expected}")
+        if head == BEGIN_GRAPH:
             _arity(head, text, number, reader)
-            reader.blocks.append(current)
-            current = None
+            if seen_begin:
+                reader.fail(number, f"a second {BEGIN_GRAPH}")
+            seen_begin = True
             continue
-        if head in (BEGIN_INFO, BEGIN_COMPUTATION, EDGE, END_GRAPH, BEGIN_GRAPH):
-            reader.fail(number, f"{current.node_id} was never closed before {head}")
-            reader.blocks.append(current)
-            current = None
+        if head == END_GRAPH:
+            _arity(head, text, number, reader)
+            if seen_end:
+                reader.fail(number, f"a second {END_GRAPH}")
+            seen_end = True
             continue
-        _read_field(current, text, number, reader)
+        if not seen_begin:
+            reader.fail(number, f"text before {BEGIN_GRAPH}: {text!r}")
+            continue
+        if seen_end:
+            reader.fail(number, f"text after {END_GRAPH}: {text!r}")
+            continue
+        if head in (BEGIN_INFO, BEGIN_COMPUTATION):
+            current = _open_block(head, text, number, reader)
+            continue
+        if head == EDGE:
+            _read_edge(text, number, reader)
+            continue
+        reader.fail(number, f"{text.split()[0]!r} is not a known statement")
 
     if current is not None:
-        reader.fail(current.line, f"{current.node_id} is never closed")
+        # The input ran out with a block still open. Closing it costs nothing that is not already
+        # checked: a block missing a required field is refused when it is built, whether it was
+        # closed by a terminator, by the next statement, or by the end of the text.
+        reader.note("block terminator", current.line, f"{current.node_id} closed at the end")
+        reader.blocks.append(current)
     if not seen_begin:
         reader.fail(0, f"no {BEGIN_GRAPH}")
     if not seen_end:
@@ -435,9 +453,36 @@ def _materialize(reader: _Reader) -> StateGraph | None:
     graph = StateGraph()
     for node in nodes:
         graph.add(node)
-    for source, relation, target, _ in reader.edges:
+    for source, relation, target, line in reader.edges:
+        source, target = _oriented(source, relation, target, kind_of, reader, line)
         graph.add_edge(mapping[source], relation, mapping[target])
     return graph
+
+
+_ENTITY_OF = {"info": EntityType.INFORMATION, "computation": EntityType.COMPUTATION}
+
+
+def _oriented(source: str, relation: Relation, target: str, kind_of: dict[str, str],
+              reader: _Reader, line: int) -> tuple[str, str]:
+    """Put an edge the right way round when the declarations prove which way that is.
+
+    `EDGE c_get_messages REQUIRES i_roommates` reads as English and is backwards: the protocol fixes
+    `REQUIRES` as information to computation, and both labels have been declared, so the endpoints
+    themselves say what was meant. Nothing is guessed -- the types match the relation reversed and
+    match it in no other way.
+
+    Only for relations whose two ends are different kinds. `PRECEDES` and `REFINES` run between two
+    computations, so the types cannot say which end is which, and an edge written the wrong way
+    round there is indistinguishable from one written correctly.
+    """
+    want_source, want_target = ENDPOINTS[relation]
+    if want_source is want_target:
+        return source, target
+    got = (_ENTITY_OF.get(kind_of[source]), _ENTITY_OF.get(kind_of[target]))
+    if got == (want_target, want_source):
+        reader.note("edge direction", line, f"{source} {relation.name} {target}")
+        return target, source
+    return source, target
 
 
 def _information(block: _Block, canonical: str, reader: _Reader) -> InformationNode | None:

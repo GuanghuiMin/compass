@@ -320,8 +320,47 @@ def test_an_unknown_relation_is_rejected():
                                                          "EDGE i1 SUPPORTS c1"))
 
 
-def test_a_block_without_its_end_is_rejected():
-    assert "never closed" in messages(WHOLE.replace("END_INFO\n\nINFO i2", "\nINFO i2"))
+def test_a_block_the_next_statement_closes_is_accepted():
+    """Reversed deliberately: the statement after it proves where the block ended."""
+    outcome = parse(WHOLE.replace("END_INFO\n\nINFO i2", "\nINFO i2"))
+    assert outcome.errors == ()
+    assert [i.id for i in outcome.graph.information] == ["i1", "i2"]
+    assert any("block terminator" in n for n in outcome.normalizations)
+
+
+def test_the_statement_that_closed_a_block_is_still_read():
+    """The bug this rule must not have: closing on `INFO i2` and then dropping `INFO i2`."""
+    text = ("BEGIN_GRAPH\n"
+            "INFO i1\nkind: fact\navailable: true\ndescription: one\n"
+            "INFO i2\nkind: fact\navailable: true\ndescription: two\n"
+            "COMPUTATION c1\ndescription: work\n"
+            "EDGE i1 REQUIRES c1\n"
+            "EDGE i2 REQUIRES c1\n"
+            "END_GRAPH\n")
+    outcome = parse(text)
+    assert outcome.errors == ()
+    assert [i.id for i in outcome.graph.information] == ["i1", "i2"]
+    assert [c.id for c in outcome.graph.computations] == ["c1"]
+    assert outcome.graph.requires_of("c1") == ("i1", "i2")
+
+
+def test_a_block_left_open_at_the_end_is_closed():
+    text = ("BEGIN_GRAPH\nINFO i1\nkind: fact\navailable: true\ndescription: one\n"
+            "COMPUTATION c1\ndescription: work\nEDGE i1 REQUIRES c1\nEND_GRAPH\n")
+    assert parse(text).errors == ()
+
+
+def test_a_block_closed_by_the_wrong_terminator_is_still_rejected():
+    """Implicit closure is about a missing terminator, not a wrong one."""
+    text = ("BEGIN_GRAPH\nINFO i1\nkind: fact\navailable: true\ndescription: one\n"
+            "END_COMPUTATION\nEND_GRAPH\n")
+    assert "expected END_INFO" in messages(text)
+
+
+def test_an_implicitly_closed_block_still_needs_its_fields():
+    text = ("BEGIN_GRAPH\nINFO i1\nkind: fact\navailable: true\n"
+            "COMPUTATION c1\ndescription: work\nEND_GRAPH\n")
+    assert "has no description" in messages(text)
 
 
 def test_text_outside_the_graph_is_rejected():
@@ -701,3 +740,67 @@ def test_canonicalization_invents_nothing():
     assert len(graph.computations) == 3 and len(graph.information) == 1
     assert len(graph.edges) == 4
     assert len(graph.node("c2").arguments) == 1
+
+
+# --------------------------------------------------------------------------- edge direction
+#
+# `EDGE c1 REQUIRES i1` reads as English and is backwards. Both labels are declared, so the
+# endpoints themselves say which way the edge goes -- the types match the relation reversed and
+# match it no other way. Nothing here guesses; a relation whose two ends are the same kind is left
+# exactly as written, because for those the types say nothing at all.
+
+def test_a_reversed_requires_is_put_the_right_way_round():
+    text = ("BEGIN_GRAPH\nINFO i1\nkind: fact\navailable: true\ndescription: d\nEND_INFO\n"
+            "COMPUTATION c1\ndescription: work\nEND_COMPUTATION\n"
+            "EDGE c1 REQUIRES i1\nEND_GRAPH\n")
+    outcome = parse(text)
+    assert outcome.errors == ()
+    assert outcome.graph.requires_of("c1") == ("i1",)
+    assert any("edge direction" in n for n in outcome.normalizations)
+
+
+def test_a_reversed_produces_is_put_the_right_way_round():
+    text = ("BEGIN_GRAPH\nINFO i1\nkind: fact\navailable: true\ndescription: d\nEND_INFO\n"
+            "COMPUTATION c1\ndescription: work\nEND_COMPUTATION\n"
+            "EDGE i1 PRODUCES c1\nEDGE i1 REQUIRES c1\nEND_GRAPH\n")
+    outcome = parse(text)
+    assert outcome.errors == ()
+    assert outcome.graph.produces_of("c1") == ("i1",)
+
+
+@pytest.mark.parametrize("relation", ["INTERFACE_INPUT", "INTERFACE_OUTPUT"])
+def test_the_interface_relations_are_oriented_too(relation):
+    written = (f"EDGE c1 {relation} i1" if relation == "INTERFACE_INPUT"
+               else f"EDGE i1 {relation} c1")
+    text = ("BEGIN_GRAPH\nINFO i1\nkind: fact\navailable: true\ndescription: d\nEND_INFO\n"
+            "COMPUTATION c1\ndescription: work\nEND_COMPUTATION\n"
+            f"{written}\nEND_GRAPH\n")
+    outcome = parse(text)
+    assert outcome.errors == ()
+    edges = {(e.source, e.relation.name, e.target) for e in outcome.graph.edges}
+    expected = ("i1", relation, "c1") if relation == "INTERFACE_INPUT" else ("c1", relation, "i1")
+    assert expected in edges
+
+
+@pytest.mark.parametrize("relation", ["PRECEDES", "REFINES"])
+def test_an_edge_between_two_computations_is_left_exactly_as_written(relation):
+    """Both ends are computations, so the types cannot say which way it was meant to go."""
+    text = ("BEGIN_GRAPH\nCOMPUTATION c1\ndescription: one\nEND_COMPUTATION\n"
+            "COMPUTATION c2\ndescription: two\nEND_COMPUTATION\n"
+            f"EDGE c2 {relation} c1\nEND_GRAPH\n")
+    outcome = parse(text)
+    assert outcome.errors == ()
+    assert ("c2", relation, "c1") in {(e.source, e.relation.name, e.target)
+                                      for e in outcome.graph.edges}
+    assert not any("edge direction" in n for n in outcome.normalizations)
+
+
+def test_an_edge_matching_neither_direction_is_left_for_validation():
+    """Two computations joined by REQUIRES matches the relation forwards or backwards in no way."""
+    text = ("BEGIN_GRAPH\nCOMPUTATION c1\ndescription: one\nEND_COMPUTATION\n"
+            "COMPUTATION c2\ndescription: two\nEND_COMPUTATION\n"
+            "EDGE c1 REQUIRES c2\nEND_GRAPH\n")
+    outcome = parse(text)
+    assert outcome.errors == ()
+    from future_graph.validation import validate
+    assert "endpoint_type" in [v.code for v in validate(outcome.graph)]

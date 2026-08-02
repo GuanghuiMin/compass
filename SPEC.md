@@ -398,22 +398,28 @@ At a boundary:
 1. The previous graph stays untouched.
 2. The generator returns a complete candidate graph.
 3. The candidate is parsed; only surface syntax is normalized, labels included (§4).
-4. The `REQUIRES` edge every argument reference implies is added (§6 rule 5). Additive only.
-5. The code-owned interface edges are completed (§3.1): the model's declarations of those relations
+4. A `PRECEDES` edge from a computation to itself is removed. It says the computation runs before
+   itself, which no execution satisfies and none is forbidden by, and there is no other target the
+   text could have meant — so this deletes an edge that carries nothing rather than choosing a
+   dependency. Only `PRECEDES`: a `REFINES` self-loop may stand where a missing child should be, and
+   dropping it would turn a refined obligation into a leaf, so it stays and the acyclicity check
+   refuses it.
+5. The `REQUIRES` edge every argument reference implies is added (§6 rule 5). Additive only.
+6. The code-owned interface edges are completed (§3.1): the model's declarations of those relations
    are removed and the derived set is put in their place.
 
-   Both completions build a **new** graph, so a candidate that is later refused was never altered on
-   the way to being refused. Arguments come first, and the order is load-bearing: an edge added in
-   step 4 can be the reason an information node crosses a boundary in step 5, and deriving the
-   interfaces first would leave the boundary incomplete and refuse the graph for a gap it does not
-   have.
-6. The completed candidate is validated whole, collecting every violation.
-7. Dead information — no outgoing `REQUIRES` — is removed deterministically. Code removes it; code
+   Every step above builds a **new** graph, so a candidate that is later refused was never altered
+   on the way to being refused. Arguments come before interfaces, and the order is load-bearing: an
+   edge added in step 5 can be the reason an information node crosses a boundary in step 6, and
+   deriving the interfaces first would leave the boundary incomplete and refuse the graph for a gap
+   it does not have.
+7. The completed candidate is validated whole, collecting every violation.
+8. Dead information — no outgoing `REQUIRES` — is removed deterministically. Code removes it; code
    never infers who a consumer *should* have been.
-8. If valid, the completed candidate replaces the previous graph atomically.
-9. If not, the previous graph survives byte-identically and nothing is collected, deleted or merged.
-10. Raw output, parsed candidate, normalization log, both sets of completion edits, verdicts and the
-    resulting graph are all saved.
+9. If valid, the completed candidate replaces the previous graph atomically.
+10. If not, the previous graph survives byte-identically and nothing is collected, deleted or merged.
+11. Raw output, parsed candidate, normalization log, every graph edit, verdicts and the resulting
+    graph are all saved.
 
 Completion precedes validation because the thing validated has to be the thing committed.
 
@@ -585,7 +591,28 @@ END_GRAPH
 The parser normalizes, and records every instance of, exactly this list: one matched pair of markdown
 fences around the whole answer, indentation, blank lines, capitalization of structural keywords and
 field names, spacing around the `:` of a field, spacing around the `=` of an `entry` or `argument`,
-quotes around scalars, and trailing whitespace.
+quotes around scalars, trailing whitespace, node labels (§4), a missing block terminator, and the
+direction of an edge whose two ends are different kinds.
+
+**A missing block terminator.** When a block is open and a statement appears that can only occur at
+the top level — `INFO`, `COMPUTATION`, `EDGE`, `END_GRAPH` — that statement proves the block before
+it ended, so the block is closed and **the same line is then read as what it is**. Closing a block
+must not swallow the statement that showed the block was over. A block still open when the text runs
+out is closed the same way. A blank line is not a terminator: blank lines are discarded as surface
+before any of this runs, so they are not a boundary anything can rely on.
+
+Still refused: a block closed by the wrong terminator, a block missing a required field, and an
+unknown field inside one. Implicit closure is about a terminator that is absent, never about one
+that is wrong.
+
+**The direction of an asymmetric edge.** `EDGE c1 REQUIRES i1` reads as English and is backwards.
+Once every block is declared the endpoint kinds are known, and if they match the relation exactly
+reversed and match it in no other way, the edge is turned round. This applies to `REQUIRES`,
+`PRODUCES`, `INTERFACE_INPUT` and `INTERFACE_OUTPUT`, whose two ends are different kinds. It does
+**not** apply to `PRECEDES` or `REFINES`: both ends are computations, so the types cannot say which
+end was meant to be which, and an edge written the wrong way round is indistinguishable from one
+written correctly. An edge matching neither direction is left alone and refused by the endpoint
+check. Nothing here reads a name or measures a similarity.
 
 Fields within a block may appear in any order. Field order is part of the grammar rather than a
 deviation from it, and is not recorded: counting it would turn a harmless choice into a statistic about
@@ -735,6 +762,7 @@ raw output
   -> parse                       surface, labels included
   -> snapshot the parsed candidate, before anything mutates it
   -> replace(previous, candidate)
+       -> drop reflexive PRECEDES edges
        -> add the REQUIRES edges the argument references imply
        -> complete the code-owned interfaces
        -> validate
@@ -784,9 +812,14 @@ information ids; and the rendered handover.
 `interface_changes` holds every code-owned interface edge taken out of the candidate or put into it,
 as an action, a source, a relation and a target, in canonical ids and a deterministic order, and is
 empty when nothing moved. `argument_dependency_changes` holds the `REQUIRES` edges added from
-argument references, in the same shape. They are separate fields because they are different claims:
-one is derived from a whole subtree's dataflow, the other restates a single argument. The second
-never records a removal, because that step removes nothing. Removals are recorded as well as additions: without them the record would show a
+argument references, and `ordering_repairs` the reflexive `PRECEDES` edges removed, both in the same
+shape. They are separate fields because they are different claims: one is derived from a whole
+subtree's dataflow, one restates a single argument, one deletes an edge that could carry no meaning.
+The second never records a removal and the third never records an addition, because neither step
+does the other thing.
+
+All three are graph edits and none is a parser normalization. Normalizations are tolerated surface;
+these change the graph. Removals are recorded as well as additions: without them the record would show a
 graph gaining edges and never show one losing them, and a declaration the code discarded would be
 invisible. An edge the model wrote that the derivation also produces is not reported, because it was
 removed and put back identically and listing it would bury the real edits.

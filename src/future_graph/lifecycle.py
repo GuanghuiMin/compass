@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from .arguments import ArgumentDependency, complete_argument_dependencies
 from .interfaces import InterfaceChange, complete_interfaces
+from .ordering import OrderingRepair, remove_reflexive_precedes
 from .state_graph import StateGraph
 from .validation import Violation, unconsumed_information, validate
 
@@ -25,6 +26,7 @@ class Replacement:
     collected: tuple[str, ...] = field(default=())
     interface_changes: tuple[InterfaceChange, ...] = field(default=())
     argument_dependency_changes: tuple[ArgumentDependency, ...] = field(default=())
+    ordering_repairs: tuple[OrderingRepair, ...] = field(default=())
 
     @property
     def rejected(self) -> bool:
@@ -50,10 +52,10 @@ def collect_dead_information(graph: StateGraph) -> tuple[str, ...]:
 def replace(previous: StateGraph, candidate: StateGraph) -> Replacement:
     """Complete what the candidate already states, validate the whole thing, and only then swap.
 
-    Two completions, in this order: the `REQUIRES` edge every argument reference implies, and then
-    the refinement interfaces. The order matters -- an edge added by the first can be the reason
-    an information node crosses a boundary, so deriving the interfaces first would leave the
-    boundary incomplete.
+    Three steps, in this order: reflexive ordering edges are dropped, the `REQUIRES` edge every
+    argument reference implies is added, and then the refinement interfaces are completed. The
+    order matters -- an edge added by the second can be the reason an information node crosses a
+    boundary, so deriving the interfaces first would leave the boundary incomplete.
 
     Completion comes before validation because the thing validated has to be the thing committed.
     Neither step is a repair: they write down relations the candidate already determines, and a
@@ -63,14 +65,17 @@ def replace(previous: StateGraph, candidate: StateGraph) -> Replacement:
     a graph that turned out to be invalid. The candidate is never mutated -- completion returns a new
     graph -- so a refusal leaves both graphs exactly as they were.
     """
-    with_arguments, argument_changes = complete_argument_dependencies(candidate)
+    ordered, ordering_repairs = remove_reflexive_precedes(candidate)
+    with_arguments, argument_changes = complete_argument_dependencies(ordered)
     completed, interface_changes = complete_interfaces(with_arguments)
     violations = validate(completed)
     if violations:
         return Replacement(accepted=False, graph=previous, violations=violations,
                            interface_changes=interface_changes,
-                           argument_dependency_changes=argument_changes)
+                           argument_dependency_changes=argument_changes,
+                           ordering_repairs=ordering_repairs)
     collected = collect_dead_information(completed)
     return Replacement(accepted=True, graph=completed, collected=collected,
                        interface_changes=interface_changes,
-                       argument_dependency_changes=argument_changes)
+                       argument_dependency_changes=argument_changes,
+                       ordering_repairs=ordering_repairs)
