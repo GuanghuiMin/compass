@@ -27,13 +27,14 @@
     "path_or_branch_invalidated",
     "goal_or_constraint_revised"
    ],
-   "constraint": "non-empty only when event_class is structural_revision, empty otherwise; order is not meaningful and values do not repeat"
+   "constraint": "both directions, not one: event_class == structural_revision requires 1 to 3 unique values from the list, and event_class != structural_revision requires the empty array. A structural revision with no subtype is refused, because the rubric asks which kind it was.",
+   "order": "not meaningful; values do not repeat"
   },
   "terminal_stage": {
    "type": "string or null",
    "required": true,
    "one_of": ["ready", "confirmed", null],
-   "constraint": "non-null only when event_class is terminal_transition"
+   "constraint": "both directions, not one: event_class == terminal_transition requires ready or confirmed, and event_class != terminal_transition requires null. A terminal transition without a stage is refused, because only ready is used for terminal localization and the two must never merge."
   }
  },
  "file": {
