@@ -113,8 +113,8 @@ def test_an_accepted_revision_changes_the_graph_and_says_what_it_changed(nursery
     record = result.record
     assert record.accepted
     assert record.faults == () and record.violations == () and record.parse_errors == ()
-    assert record.affected_roots == ("c2",)
-    assert record.touched_nodes == ("c3",)
+    assert [str(r) for r in record.affected_roots] == ["previous:c2"]
+    assert [str(r) for r in record.touched_nodes] == ["previous:c3"]
     assert {n.description for n in result.graph.computations} == {
         "Register every seedling", "Open a catalogue entry", "Attach the photo"}
 
@@ -212,7 +212,7 @@ def test_text_instead_of_a_revision_is_a_parse_failure(nursery):
 def test_an_unaccounted_crossing_is_a_fault_and_not_a_parse_error(nursery):
     record = update_graph("g", "r", nursery, "d", stub(REFUSED), CONFIG).record
     assert record.faults and not record.parse_errors
-    assert record.faults[0][0] == "unaccounted_crossing_relation"
+    assert record.faults[0].code == "unaccounted_crossing_relation"
 
 
 def test_a_model_that_returns_something_other_than_text_is_a_caller_mistake(nursery):
@@ -256,9 +256,9 @@ END_REVISION
 """
     record = update_graph("g", "r", previous, "d", stub(output), CONFIG).record
     assert record.accepted
-    assert record.affected_roots == ("c2",)
-    assert [r for r in record.removed_nodes if r[1] == "affected_region"] \
-        == [("c2", "affected_region")]
+    assert [str(r) for r in record.affected_roots] == ["previous:c2"]
+    assert [str(r.node) for r in record.removed_nodes if r.reason == "affected_region"] \
+        == ["previous:c2"]
     assert record.replacement_boundary_changes            # the position the replacement inherited
     assert record.argument_dependency_changes             # the edge the argument already implied
     assert record.interface_changes                       # the boundary the dataflow crosses
@@ -285,7 +285,7 @@ END_REVISION
 """
     record = update_graph("g", "r", previous, "d", stub(output), CONFIG).record
     assert record.accepted
-    actions = {action for action, _, _ in record.completion_changes}
+    actions = {change.action for change in record.completion_changes}
     assert actions == {"became_available", "producer_removed", "content_replaced"}
     # The availability transition is the model's declaration carried out, so it is filed there and
     # nowhere else. Nothing was derived on this boundary.
@@ -322,7 +322,7 @@ END_REVISION
 """
     record = update_graph("g", "r", nursery, "d", stub(output), CONFIG).record
     assert record.accepted
-    created = dict(record.id_map)["+entry_ids"]
+    created = next(m.target for m in record.id_map if m.source.id == "+entry_ids")
     assert record.newly_created_then_collected == (created,)
     assert created in record.collected
 
@@ -500,6 +500,100 @@ def test_a_record_with_gaps_in_its_attempts_is_refused(nursery):
     raw["attempts"] = [[1, "RateLimited", "429"], [3, "completion", "x"]]
     with pytest.raises(ArtifactError, match="ordinals"):
         RevisionRecord.from_dict(raw)
+
+
+# --------------------------------------------------------------------------- identity spaces
+
+def test_a_removed_previous_id_and_a_different_assembled_id_cannot_be_confused():
+    """Boundary 4 of the recurrent run, exactly. Completing the whole plan removed the previous
+    `i2`, and the node that had been `i3` was renumbered into `i2` and then collected. Written as
+    bare strings the two are indistinguishable, and any join across the fields is wrong."""
+    previous = build(
+        nodes=[C(id="c1", description="Update the playlist"),
+               C(id="c2", description="Find the playlist", operation="spotify.playlists"),
+               C(id="c3", description="Add the songs", operation="spotify.add"),
+               I(id="i1", kind=K.FACT, description="The access token", available=True),
+               I(id="i2", kind=K.RESULT, description="The playlist id", available=False),
+               I(id="i3", kind=K.FACT, description="The parsed suggestions", available=True)],
+        edges=[("c1", R.REFINES, "c2"), ("c1", R.REFINES, "c3"),
+               ("i1", R.REQUIRES, "c2"), ("i1", R.REQUIRES, "c3"),
+               ("c2", R.PRODUCES, "i2"), ("i2", R.REQUIRES, "c3"),
+               ("i3", R.REQUIRES, "c3")])
+    record = update_graph("g", "r", previous, "d",
+                          stub("BEGIN_REVISION\nCOMPLETE c1\nEND_COMPLETE\nEND_REVISION\n"),
+                          CONFIG).record
+    assert record.accepted
+
+    removed = {str(r.node) for r in record.removed_nodes}
+    collected = {str(r) for r in record.collected}
+    assert "previous:i2" in removed
+    assert "assembled:i2" in collected
+    # The strings do not collide, so nothing joins them; and they really are different nodes.
+    assert not removed & collected
+    was = {n["id"]: n["description"] for n in record.previous_snapshot["information"]}
+    became = {n["id"]: n["description"] for n in record.assembled_snapshot["information"]}
+    assert was["i2"] == "The playlist id"
+    assert became["i2"] == "The parsed suggestions"
+
+
+def test_every_reference_in_a_record_says_which_graph_it_belongs_to(nursery):
+    record = update_graph("g", "r", nursery, "d", stub(GOOD), CONFIG).record
+    raw = record.to_dict()
+    assert set(raw["id_spaces"]) == {"previous", "revision", "assembled"}
+    for field in ("affected_roots", "touched_nodes", "newly_created_then_collected", "collected"):
+        assert all(set(item) == {"id", "space"} for item in raw[field])
+    for field in ("removed_edges", "replacement_boundary_changes", "interface_changes",
+                  "argument_dependency_changes", "ordering_repairs"):
+        for item in raw[field]:
+            assert set(item["source"]) == {"id", "space"}
+            assert set(item["target"]) == {"id", "space"}
+
+
+def test_each_field_is_held_to_the_one_graph_it_can_talk_about(nursery):
+    raw = update_graph("g", "r", nursery, "d", stub(GOOD), CONFIG).record.to_dict()
+    raw["affected_roots"] = [{"id": "c2", "space": "assembled"}]
+    with pytest.raises(ArtifactError, match="affected_roots"):
+        RevisionRecord.from_dict(raw)
+
+
+def test_a_removed_node_cannot_claim_an_assembled_identity(nursery):
+    raw = update_graph("g", "r", nursery, "d", stub(GOOD), CONFIG).record.to_dict()
+    raw["removed_nodes"] = [{"node": {"id": "c2", "space": "assembled"},
+                             "reason": "affected_region"}]
+    with pytest.raises(ArtifactError, match="only in the previous graph"):
+        RevisionRecord.from_dict(raw)
+
+
+def test_a_reference_in_a_space_that_does_not_exist_is_refused(nursery):
+    raw = update_graph("g", "r", nursery, "d", stub(GOOD), CONFIG).record.to_dict()
+    raw["collected"] = [{"id": "i9", "space": "imagined"}]
+    with pytest.raises(ArtifactError, match="imagined"):
+        RevisionRecord.from_dict(raw)
+
+
+def test_the_mapping_runs_from_what_the_model_wrote_to_what_it_became(nursery):
+    record = update_graph("g", "r", nursery, "d", stub(GOOD), CONFIG).record
+    spaces = {(m.source.space, m.target.space) for m in record.id_map}
+    assert spaces <= {("previous", "assembled"), ("revision", "assembled")}
+    assert ("revision", "assembled") in spaces
+    assert any(m.source.id == "+open" for m in record.id_map)
+
+
+def test_a_completion_keeps_its_removed_producer_in_the_graph_it_came_from():
+    previous = build(
+        nodes=[C(id="c1", description="Read it", operation="nursery.describe"),
+               C(id="c2", description="Register each seedling"),
+               I(id="i1", kind=K.RESULT, description="How registration works", available=False)],
+        edges=[("c1", R.PRODUCES, "i1"), ("i1", R.REQUIRES, "c2")])
+    output = ("BEGIN_REVISION\nCOMPLETE c1\nNOW_AVAILABLE i1\nkind: contract\n"
+              "contract-operation: nursery.register_one\nEND_NOW_AVAILABLE\n"
+              "END_COMPLETE\nEND_REVISION\n")
+    record = update_graph("g", "r", previous, "d", stub(output), CONFIG).record
+    removed = next(c for c in record.completion_changes if c.action == "producer_removed")
+    assert str(removed.node) == "assembled:i1"
+    assert str(removed.producer) == "previous:c1"
+    assert all(c.producer is None for c in record.completion_changes
+               if c.action != "producer_removed")
 
 
 # --------------------------------------------------------------------------- routing

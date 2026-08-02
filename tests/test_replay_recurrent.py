@@ -183,7 +183,7 @@ def test_the_summary_separates_the_model_s_work_from_the_code_s(tmp_path):
     run_dir = tmp_path / "run"
     replay_revision(inputs_of("one", "two"), Stub(FIRST, SECOND), prepared(run_dir))
     second = rows_of(run_dir)[1]
-    assert second["model_authored"]["removed_regions"] == ["c1"]
+    assert second["model_authored"]["removed_regions"] == ["previous:c1"]
     assert any(change[0] == "became_available"
                for change in second["code_owned"]["completion_changes"])
 
@@ -276,8 +276,8 @@ END_REVISION
     replay_revision(inputs_of("one"), Stub(stillborn), prepared(run_dir))
     row = rows_of(run_dir)[0]
     assert row["accepted"]
-    assert row["newly_created_then_collected"] == ["i1"]
-    assert row["code_owned"]["collected"] == ["i1"]
+    assert row["newly_created_then_collected"] == ["assembled:i1"]
+    assert row["code_owned"]["collected"] == ["assembled:i1"]
 
 
 def test_measure_is_a_pure_reading_of_a_record(tmp_path):

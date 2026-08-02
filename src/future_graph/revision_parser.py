@@ -218,8 +218,13 @@ def _open_entity(head: str, text: str, number: int, reader: _Reader) -> _Entity:
         reader.fail(number, f"{name!r} is not a name")
         return _Entity(head, name, number, usable=False)
     if head in (COMPUTATION, INFORMATION) and not name.startswith("+"):
-        reader.fail(number, f"{head} declares something new, and {name!r} has no leading +")
-        return _Entity(head, name, number, usable=False)
+        # A block header is a declaration and can be nothing else, so the `+` carries no
+        # information here and its absence is surface. This holds even when the name is also a
+        # previous-snapshot id or the anchor of the enclosing REPLACE: that anchor was named by the
+        # REPLACE, and this is a different syntactic role. References stay strict, because there
+        # the marker is the only thing distinguishing a new node from an existing one.
+        reader.note("declaration marker", number, name)
+        name = "+" + name
     if head == NOW_AVAILABLE and name.startswith("+"):
         reader.fail(number, f"{head} names information already in the graph, and {name!r} "
                             "declares a new one")

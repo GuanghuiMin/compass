@@ -152,11 +152,43 @@ def test_an_operation_cannot_name_something_new():
     assert any("declares a new one" in e.message for e in outcome.errors)
 
 
-def test_a_declared_computation_must_be_new():
-    outcome = parse_revision(wrapped(
-        "ADD\nCOMPUTATION c3\ndescription: d\nEND_COMPUTATION\nEND_ADD"))
-    assert outcome.revision is None
-    assert any("leading +" in e.message for e in outcome.errors)
+def test_a_declaration_header_without_its_plus_is_completed():
+    """A block header can only declare, so the marker carries nothing there and its absence is
+    surface. It is the reference positions that need it."""
+    outcome = only(wrapped(
+        "ADD\nCOMPUTATION c3\ndescription: d\nEND_COMPUTATION\n"
+        "INFORMATION token\nkind: fact\navailable: true\ndescription: d\nEND_INFORMATION\n"
+        "END_ADD"))
+    add = outcome.revision.operations[0]
+    assert add.computations[0].label == "+c3"
+    assert add.information[0].label == "+token"
+    assert sum("declaration marker" in n for n in outcome.normalizations) == 2
+
+
+def test_a_declaration_may_take_the_name_of_the_anchor_it_replaces():
+    """Boundary 1 of the recurrent run: the model refined an abstract leaf in place and gave the
+    replacement the name of the leaf. The `REPLACE` already named that anchor, and a header is a
+    different syntactic role, so there is nothing to guess at."""
+    outcome = only(wrapped(
+        "REPLACE c3\nreason-for-replacement: it is understood well enough to break down\n"
+        "COMPUTATION c3\ndescription: the same obligation, now refined\n"
+        "refined-into: +first, +second\nEND_COMPUTATION\n"
+        "COMPUTATION +first\ndescription: d\nEND_COMPUTATION\n"
+        "COMPUTATION +second\ndescription: d\nEND_COMPUTATION\n"
+        "END_REPLACE"))
+    op = outcome.revision.operations[0]
+    assert op.anchor == "c3"
+    assert [c.label for c in op.computations] == ["+c3", "+first", "+second"]
+    assert op.computations[0].refined_into == ("+first", "+second")
+
+
+def test_the_marker_is_still_required_in_a_reference():
+    """Completing it there would be guessing whether the model meant the new node or the old
+    anchor, which is the one thing the marker exists to settle."""
+    outcome = only(wrapped(
+        "ADD\nCOMPUTATION +a\ndescription: d\nrequires: i1\nEND_COMPUTATION\nEND_ADD"))
+    assert outcome.revision.operations[0].computations[0].requires == ("i1",)
+    assert not any("declaration marker" in n for n in outcome.normalizations)
 
 
 def test_now_available_names_something_that_already_exists():

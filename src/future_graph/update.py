@@ -19,7 +19,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from .artifacts import ConfigScalar, ModelCall, RevisionRecord, freeze_config
+from .artifacts import (
+    CompletionEvent, ConfigScalar, EdgeChange, ModelCall, Ref, Removal, Renaming, Report,
+    RevisionRecord, assembled_ref, authored_ref, freeze_config, previous_ref,
+)
 from .lifecycle import replace
 from .protocol import to_protocol
 from .regeneration import Model, PromptError
@@ -91,12 +94,12 @@ def update_graph(goal: str, rules: str, previous: StateGraph, delta_h: str,
     outcome = parse_revision(raw)
     graph = previous
     changes = RevisionChanges()
-    faults: tuple = ()
-    violations: tuple = ()
-    collected: tuple = ()
-    interface_changes: tuple = ()
-    argument_changes: tuple = ()
-    ordering_repairs: tuple = ()
+    faults: tuple[Report, ...] = ()
+    violations: tuple[Report, ...] = ()
+    collected: tuple[Ref, ...] = ()
+    interface_changes: tuple[EdgeChange, ...] = ()
+    argument_changes: tuple[EdgeChange, ...] = ()
+    ordering_repairs: tuple[EdgeChange, ...] = ()
     assembled_snapshot = None
     empty = False
 
@@ -108,27 +111,29 @@ def update_graph(goal: str, rules: str, previous: StateGraph, delta_h: str,
     elif outcome.revision is not None:
         applied = apply_revision(previous, outcome.revision)
         changes = applied.changes
-        faults = tuple((f.code, f.message, f.nodes) for f in applied.faults)
+        # A fault names entities as the model wrote them, so each is tagged by what it is: its own
+        # label, or an anchor into the graph it was shown.
+        faults = tuple(Report(f.code, f.message, tuple(authored_ref(n) for n in f.nodes), f.sites)
+                       for f in applied.faults)
         if applied.graph is not None:
             # Before any completion, so the record can tell what the revision asked for apart from
-            # what the code then worked out.
+            # what the code then worked out. Everything from here on is in assembled ids, which
+            # collection does not renumber, so the resulting graph keeps them.
             assembled_snapshot = applied.graph.to_snapshot()
             replacement = replace(previous, applied.graph)
             graph = replacement.graph
-            violations = tuple((v.code, v.message, v.nodes) for v in replacement.violations)
-            collected = replacement.collected
-            interface_changes = tuple((c.action, c.source, c.relation.value, c.target)
-                                      for c in replacement.interface_changes)
-            argument_changes = tuple((c.action, c.source, c.relation.value, c.target)
-                                     for c in replacement.argument_dependency_changes)
-            ordering_repairs = tuple((c.action, c.source, c.relation.value, c.target)
-                                     for c in replacement.ordering_repairs)
+            violations = tuple(Report(v.code, v.message,
+                                      tuple(assembled_ref(n) for n in v.nodes))
+                               for v in replacement.violations)
+            collected = tuple(assembled_ref(n) for n in replacement.collected)
+            interface_changes = _assembled_edges(replacement.interface_changes)
+            argument_changes = _assembled_edges(replacement.argument_dependency_changes)
+            ordering_repairs = _assembled_edges(replacement.ordering_repairs)
 
     # An empty revision is a boundary that ended normally, and the state it leaves behind is the
     # state it was given, unrenumbered and with its derived edges intact.
     accepted = empty or (outcome.revision is not None and not faults and not violations
                          and assembled_snapshot is not None)
-    stillborn = _newly_created_then_collected(changes, collected)
 
     record = RevisionRecord(
         goal=goal, rules=rules, delta_h=delta_h, previous_snapshot=previous_snapshot,
@@ -137,16 +142,23 @@ def update_graph(goal: str, rules: str, previous: StateGraph, delta_h: str,
         normalizations=outcome.normalizations,
         parse_errors=tuple((e.line, e.message) for e in outcome.errors),
         empty_revision=empty,
-        affected_roots=changes.affected_roots, touched_nodes=changes.touched_nodes,
-        removed_nodes=tuple((r.node_id, r.reason) for r in changes.removed_nodes),
-        removed_edges=tuple((c.action, c.source, c.relation.value, c.target)
-                            for c in changes.removed_edges),
-        replacement_boundary_changes=tuple((c.action, c.source, c.relation.value, c.target)
-                                           for c in changes.replacement_boundary_changes),
-        completion_changes=tuple((c.action, c.node_id, c.detail)
-                                 for c in changes.completion_changes),
-        id_map=changes.id_map,
-        newly_created_then_collected=stillborn,
+        # What the model named, and what left with it, are the graph it was shown.
+        affected_roots=tuple(previous_ref(n) for n in changes.affected_roots),
+        touched_nodes=tuple(previous_ref(n) for n in changes.touched_nodes),
+        removed_nodes=tuple(Removal(previous_ref(r.node_id), r.reason)
+                            for r in changes.removed_nodes),
+        removed_edges=tuple(EdgeChange(c.action, previous_ref(c.source), c.relation.value,
+                                       previous_ref(c.target)) for c in changes.removed_edges),
+        replacement_boundary_changes=tuple(
+            EdgeChange(c.action, assembled_ref(c.source), c.relation.value,
+                       assembled_ref(c.target)) for c in changes.replacement_boundary_changes),
+        completion_changes=tuple(
+            CompletionEvent(c.action, assembled_ref(c.node_id), c.detail,
+                            None if c.producer_id is None else previous_ref(c.producer_id))
+            for c in changes.completion_changes),
+        id_map=tuple(Renaming(authored_ref(source), assembled_ref(target))
+                     for source, target in changes.id_map),
+        newly_created_then_collected=_newly_created_then_collected(changes, collected),
         argument_dependency_changes=argument_changes,
         interface_changes=interface_changes,
         ordering_repairs=ordering_repairs,
@@ -157,8 +169,13 @@ def update_graph(goal: str, rules: str, previous: StateGraph, delta_h: str,
     return UpdateResult(graph=graph, record=record)
 
 
+def _assembled_edges(changes) -> tuple[EdgeChange, ...]:
+    return tuple(EdgeChange(c.action, assembled_ref(c.source), c.relation.value,
+                            assembled_ref(c.target)) for c in changes)
+
+
 def _newly_created_then_collected(changes: RevisionChanges,
-                                  collected: tuple[str, ...]) -> tuple[str, ...]:
+                                  collected: tuple[Ref, ...]) -> tuple[Ref, ...]:
     """Information this revision introduced and this same boundary threw away.
 
     Not a violation, and deliberately not treated as one. It has two readings the code cannot tell
@@ -166,7 +183,10 @@ def _newly_created_then_collected(changes: RevisionChanges,
     or the model established a result and forgot to connect it to the work that needs it. The
     second is a real absorption failure and the first is correct pruning, so collection stays as it
     is and this is surfaced for a human to judge in the recurrent audit.
+
+    The join runs through `id_map`, which is the only thing that can relate a label the model wrote
+    to the id its node was given.
     """
-    dead = set(collected)
-    return tuple(sorted(new_id for label, new_id in changes.id_map
-                        if label.startswith("+") and new_id in dead))
+    dead = {ref.id for ref in collected}
+    return tuple(assembled_ref(new_id) for label, new_id in sorted(changes.id_map)
+                 if label.startswith("+") and new_id in dead)

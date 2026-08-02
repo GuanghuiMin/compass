@@ -105,7 +105,7 @@ def measure(previous: StateGraph, delta_h: str, record: RevisionRecord,
     """
     sizes = _sizes(previous, delta_h, record)
     previous_nodes = len(previous.computations) + len(previous.information)
-    removed = {reason: [node for node, r in record.removed_nodes if r == reason]
+    removed = {reason: [str(r.node) for r in record.removed_nodes if r.reason == reason]
                for reason in ("affected_region", "region_internal", "invalidated_information")}
     removed_total = sum(len(nodes) for nodes in removed.values())
     return {
@@ -133,30 +133,38 @@ def measure(previous: StateGraph, delta_h: str, record: RevisionRecord,
             "resulting_information": len(resulting.information),
             "resulting_edges": len(resulting.edges),
         },
+        # Every id here carries its space, as `space:id`, because the same string in two of these
+        # lists routinely means two different nodes.
         "model_authored": {
-            "affected_roots": list(record.affected_roots),
-            "touched_nodes": list(record.touched_nodes),
+            "affected_roots": [str(r) for r in record.affected_roots],
+            "touched_nodes": [str(r) for r in record.touched_nodes],
             "removed_regions": removed["affected_region"],
         },
         "code_owned": {
             "region_internal": removed["region_internal"],
             "invalidated_information": removed["invalidated_information"],
             "replacement_boundary_changes": len(record.replacement_boundary_changes),
-            "completion_changes": [list(c) for c in record.completion_changes],
+            "completion_changes": [
+                [c.action, str(c.node), str(c.producer) if c.producer else "", c.detail]
+                for c in record.completion_changes],
             "argument_dependency_changes": len(record.argument_dependency_changes),
             "interface_changes": len(record.interface_changes),
             "ordering_repairs": len(record.ordering_repairs),
-            "collected": list(record.collected),
+            "collected": [str(r) for r in record.collected],
         },
-        "newly_created_then_collected": list(record.newly_created_then_collected),
+        "newly_created_then_collected": [str(r) for r in record.newly_created_then_collected],
         "normalizations": list(record.normalizations),
         "refusal": None if record.accepted else {
             "parse_errors": [list(e) for e in record.parse_errors],
-            "faults": [[code, message, list(nodes)] for code, message, nodes in record.faults],
-            "violations": [[code, message, list(nodes)]
-                           for code, message, nodes in record.violations],
+            "faults": [_report(f) for f in record.faults],
+            "violations": [_report(v) for v in record.violations],
         },
     }
+
+
+def _report(report) -> dict:
+    return {"code": report.code, "message": report.message,
+            "nodes": [str(n) for n in report.nodes], "sites": list(report.sites)}
 
 
 def _manifest(inputs: PreflightInputs, prepared: PreparedRun, status: str,

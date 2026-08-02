@@ -874,6 +874,22 @@ A name with a leading `+` introduces a new entity; a bare name anchors to a node
 graph. Ids remain snapshot-local (§4): survivors are renumbered in previous canonical order, then new
 entities in declaration order, and the complete mapping is recorded.
 
+**The marker is required in references and optional in declaration headers.** A `COMPUTATION` or
+`INFORMATION` block header can only declare, so the `+` carries no information there and its absence
+is surface, normalized and recorded like any other. This holds even when the name is a
+previous-snapshot id or the very anchor the enclosing `REPLACE` names: that anchor was named by the
+`REPLACE`, and a header is a different syntactic role. Refining an abstract leaf in place — keeping
+the obligation and giving it children — is the most common structural transition there is, and a
+model writing `REPLACE c3` then `COMPUTATION c3` is doing exactly that.
+
+References stay strict. A bare name in `requires`, `after`, `refined-into`, `produces` or an
+argument means the previous snapshot, and nothing infers that it meant a new node.
+
+**A `+label` used by a relation or an argument must be declared exactly once.** Nothing is invented
+for an undeclared one: the code knows neither its kind, its availability, its description nor its
+payload, and a node conjured with guessed content is worse than a refusal. The refusal names the
+label once and lists every field that used it, rather than repeating itself per mention.
+
 `REPLACE`, `COMPLETE` and `INVALIDATE` remove the named computation **and its whole refinement
 subtree**. Named regions must be disjoint: naming a computation and something it is refined into is
 refused, because the two operations would disagree about the same node.
@@ -1014,6 +1030,26 @@ produces no graph at all. A partly applied revision would be a plan nobody wrote
 
 ### 12.13 What a local-revision boundary records
 
+A boundary touches three graphs, and every one of them numbers its nodes from one. **Every node
+reference in a record therefore carries the graph it belongs to**, as `{"id": ..., "space": ...}`:
+
+| space | what it refers to |
+| --- | --- |
+| `previous` | ids in `previous_snapshot`, the graph the model was shown |
+| `revision` | the `+labels` the model wrote, local to its answer |
+| `assembled` | canonical ids after application, which `resulting_snapshot` keeps |
+
+This is not tidiness. In the recurrent run's last boundary the removed `previous:i2` was a playlist
+id and the collected `assembled:i2` was a set of parsed suggestions that had been renumbered into
+its place. Written as bare strings the two join silently and wrongly, and no care by a reader
+prevents it; `id_map` can resolve it but nothing forces anyone to consult it. Each field is also
+held to the one space it can be talking about, so a removed node cannot claim an assembled identity
+it does not have.
+
+**Collection does not renumber.** Assembled ids are the resulting graph's ids, so a surviving node
+keeps one identity from application through to the handover, and `collected` names nodes in the
+same space as everything else downstream of assembly.
+
 Everything §12.7 requires, and each change filed under whoever made it:
 
 | field | what it holds |
@@ -1027,6 +1063,14 @@ Everything §12.7 requires, and each change filed under whoever made it:
 | `completion_changes` | §12.10, kept out of interface completion |
 | `id_map` | every previous id or new label, and what it became |
 | `newly_created_then_collected` | information the revision introduced that this same boundary collected |
+
+`affected_roots`, `touched_nodes`, `removed_nodes` and `removed_edges` are `previous`.
+`replacement_boundary_changes`, `interface_changes`, `argument_dependency_changes`,
+`ordering_repairs`, `collected` and `newly_created_then_collected` are `assembled`. A
+`completion_change` names its information node in `assembled` and, for `producer_removed`, the
+producer in `previous` in its own field, because a removed producer has no assembled identity.
+A fault names entities as the model wrote them, so each is `revision` or `previous`; a validation
+violation names the graph it validated, so those are `assembled`.
 | `argument_dependency_changes`, `interface_changes`, `ordering_repairs` | as in §12.7 |
 | `faults` | why application refused, distinct from `parse_errors` and `violations` |
 

@@ -194,6 +194,8 @@ difference matters:
 New work refers to existing information by its existing name. That is how one token, one identifier or
 one confirmed interface stays a single node used from several places.
 
+Every `+label` used by a relation or an argument must have exactly one declaration in the revision.
+
 Labels are renumbered when the revision is read, so `+name` may be anything readable. Declare each
 once.
 

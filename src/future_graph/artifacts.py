@@ -309,6 +309,207 @@ def _violation(item: object) -> tuple[str, str, tuple[str, ...]]:
     return item[0], item[1], tuple(_strings(item[2], "violations"))
 
 
+# --------------------------------------------------------------------------- identity spaces
+
+# A local revision touches three graphs, and every one of them numbers its nodes from one. The
+# previous `i2` and the assembled `i2` are routinely different information nodes -- in the recurrent
+# run's last boundary, one was a playlist id that had been removed and the other was the parsed
+# suggestions that had been renumbered into its place. Written as bare strings, those two join
+# silently and wrongly, and no amount of care by a reader prevents it. So every reference in a
+# record says which graph it belongs to.
+PREVIOUS = "previous"          # ids in previous_snapshot, the graph the model was shown
+REVISION = "revision"          # +labels the model wrote, local to its answer
+ASSEMBLED = "assembled"        # canonical ids after application, and the ids the result keeps
+ID_SPACES = (PREVIOUS, REVISION, ASSEMBLED)
+
+
+@dataclass(frozen=True)
+class Ref:
+    """One node, and the graph its id belongs to."""
+    id: str
+    space: str
+
+    def __post_init__(self) -> None:
+        if self.space not in ID_SPACES:
+            raise ArtifactError(f"{self.space!r} is not one of {', '.join(ID_SPACES)}")
+
+    def __str__(self) -> str:
+        return f"{self.space}:{self.id}"
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "space": self.space}
+
+    @classmethod
+    def from_dict(cls, raw: object, where: str) -> "Ref":
+        if not isinstance(raw, dict):
+            raise ArtifactError(f"record {where}: {raw!r} is not a reference")
+        _exact_keys(raw, {"id", "space"}, f"a reference in {where}")
+        if not isinstance(raw["id"], str) or not isinstance(raw["space"], str):
+            raise ArtifactError(f"record {where}: a reference is an id and a space")
+        if raw["space"] not in ID_SPACES:
+            raise ArtifactError(f"record {where}: {raw['space']!r} is not one of "
+                                f"{', '.join(ID_SPACES)}")
+        return cls(raw["id"], raw["space"])
+
+
+def previous_ref(node_id: str) -> Ref:
+    return Ref(node_id, PREVIOUS)
+
+
+def revision_ref(label: str) -> Ref:
+    return Ref(label, REVISION)
+
+
+def assembled_ref(node_id: str) -> Ref:
+    return Ref(node_id, ASSEMBLED)
+
+
+def authored_ref(name: str) -> Ref:
+    """A name as the model wrote it: its own label, or an anchor into the graph it was shown."""
+    return revision_ref(name) if name.startswith("+") else previous_ref(name)
+
+
+@dataclass(frozen=True)
+class Removal:
+    node: Ref
+    reason: str
+
+    def to_dict(self) -> dict:
+        return {"node": self.node.to_dict(), "reason": self.reason}
+
+    @classmethod
+    def from_dict(cls, raw: object, where: str = "removed_nodes") -> "Removal":
+        if not isinstance(raw, dict):
+            raise ArtifactError(f"record {where}: {raw!r} is not a removal")
+        _exact_keys(raw, {"node", "reason"}, f"a removal in {where}")
+        if raw["reason"] not in _REMOVAL_REASONS:
+            raise ArtifactError(f"record {where}: {raw['reason']!r} is not one of "
+                                f"{', '.join(_REMOVAL_REASONS)}")
+        return cls(Ref.from_dict(raw["node"], where), raw["reason"])
+
+
+@dataclass(frozen=True)
+class EdgeChange:
+    """One edge a step of the pipeline took out of a graph or put into it."""
+    action: str                    # "added" or "removed"
+    source: Ref
+    relation: str
+    target: Ref
+
+    def to_dict(self) -> dict:
+        return {"action": self.action, "source": self.source.to_dict(),
+                "relation": self.relation, "target": self.target.to_dict()}
+
+    @classmethod
+    def from_dict(cls, raw: object, where: str) -> "EdgeChange":
+        if not isinstance(raw, dict):
+            raise ArtifactError(f"record {where}: {raw!r} is not an edge change")
+        _exact_keys(raw, {"action", "source", "relation", "target"}, f"an edge change in {where}")
+        if raw["action"] not in ("added", "removed"):
+            raise ArtifactError(f"record {where}: {raw['action']!r} is not removed or added")
+        if not isinstance(raw["relation"], str):
+            raise ArtifactError(f"record {where}: a relation is text")
+        if where == "argument_dependency_changes" and raw["action"] != "added":
+            raise ArtifactError("record argument_dependency_changes: this step removes nothing, "
+                                f"and {raw['action']!r} says otherwise")
+        if where == "ordering_repairs" and raw["action"] != "removed":
+            raise ArtifactError("record ordering_repairs: this step adds nothing, "
+                                f"and {raw['action']!r} says otherwise")
+        return cls(raw["action"], Ref.from_dict(raw["source"], where), raw["relation"],
+                   Ref.from_dict(raw["target"], where))
+
+
+@dataclass(frozen=True)
+class CompletionEvent:
+    """One step of carrying out a `COMPLETE ... NOW_AVAILABLE` declaration.
+
+    `node` is the information node in the assembled graph. `producer` is the computation that was
+    going to produce it, which exists only in the previous graph and therefore has its own field.
+    """
+    action: str
+    node: Ref
+    detail: str = ""
+    producer: Ref | None = None
+
+    def to_dict(self) -> dict:
+        return {"action": self.action, "node": self.node.to_dict(), "detail": self.detail,
+                "producer": self.producer.to_dict() if self.producer is not None else None}
+
+    @classmethod
+    def from_dict(cls, raw: object, where: str = "completion_changes") -> "CompletionEvent":
+        if not isinstance(raw, dict):
+            raise ArtifactError(f"record {where}: {raw!r} is not a completion change")
+        _exact_keys(raw, {"action", "node", "detail", "producer"}, f"a change in {where}")
+        if raw["action"] not in _COMPLETION_ACTIONS:
+            raise ArtifactError(f"record {where}: {raw['action']!r} is not one of "
+                                f"{', '.join(_COMPLETION_ACTIONS)}")
+        if not isinstance(raw["detail"], str):
+            raise ArtifactError(f"record {where}: a detail is text")
+        producer = (None if raw["producer"] is None
+                    else Ref.from_dict(raw["producer"], f"{where} producer"))
+        if (raw["action"] == "producer_removed") != (producer is not None):
+            raise ArtifactError("record completion_changes: a producer belongs to "
+                                "producer_removed and to nothing else")
+        return cls(raw["action"], Ref.from_dict(raw["node"], where), raw["detail"], producer)
+
+
+@dataclass(frozen=True)
+class Renaming:
+    """What one entity of the answer became in the assembled graph."""
+    source: Ref                    # previous anchor, or a label the model wrote
+    target: Ref                    # assembled
+
+    def to_dict(self) -> dict:
+        return {"from": self.source.to_dict(), "to": self.target.to_dict()}
+
+    @classmethod
+    def from_dict(cls, raw: object, where: str = "id_map") -> "Renaming":
+        if not isinstance(raw, dict):
+            raise ArtifactError(f"record {where}: {raw!r} is not a mapping entry")
+        _exact_keys(raw, {"from", "to"}, f"an entry in {where}")
+        source = Ref.from_dict(raw["from"], where)
+        target = Ref.from_dict(raw["to"], where)
+        if source.space not in (PREVIOUS, REVISION):
+            raise ArtifactError(f"record {where}: a mapping starts in {PREVIOUS} or {REVISION}")
+        if target.space != ASSEMBLED:
+            raise ArtifactError(f"record {where}: a mapping ends in {ASSEMBLED}")
+        return cls(source, target)
+
+
+@dataclass(frozen=True)
+class Report:
+    """One reason something was refused: a fault from application or a validation violation."""
+    code: str
+    message: str
+    nodes: tuple[Ref, ...] = ()
+    sites: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict:
+        return {"code": self.code, "message": self.message,
+                "nodes": [n.to_dict() for n in self.nodes], "sites": list(self.sites)}
+
+    @classmethod
+    def from_dict(cls, raw: object, where: str) -> "Report":
+        if not isinstance(raw, dict):
+            raise ArtifactError(f"record {where}: {raw!r} is not a report")
+        _exact_keys(raw, {"code", "message", "nodes", "sites"}, f"a report in {where}")
+        for name in ("code", "message"):
+            if not isinstance(raw[name], str):
+                raise ArtifactError(f"record {where}: a {name} is text")
+        if not isinstance(raw["nodes"], list) or not isinstance(raw["sites"], list):
+            raise ArtifactError(f"record {where}: nodes and sites are lists")
+        return cls(raw["code"], raw["message"],
+                   tuple(Ref.from_dict(n, where) for n in raw["nodes"]),
+                   tuple(_strings(raw["sites"], f"{where} sites")))
+
+
+_REMOVAL_REASONS = ("affected_region", "region_internal", "invalidated_information")
+_COMPLETION_ACTIONS = ("became_available", "producer_removed", "content_replaced",
+                       "provenance_materialized")
+
+
+# --------------------------------------------------------------------------- the record
+
 @dataclass(frozen=True)
 class RevisionRecord:
     """One boundary under the local-revision updater.
@@ -317,6 +518,9 @@ class RevisionRecord:
     the completions it declared, and each deterministic step the code took afterwards are separate
     fields, because a record that pooled them could not answer the only question worth asking of it:
     what did the model actually get right.
+
+    Every node reference carries its identity space, so two ids that read alike and mean different
+    nodes cannot be joined by accident.
     """
     goal: str
     rules: str
@@ -328,23 +532,23 @@ class RevisionRecord:
     normalizations: tuple[str, ...]
     parse_errors: tuple[tuple[int, str], ...]
     empty_revision: bool
-    affected_roots: tuple[str, ...]
-    touched_nodes: tuple[str, ...]
-    removed_nodes: tuple[tuple[str, str], ...]
-    removed_edges: tuple[tuple[str, str, str, str], ...]
-    replacement_boundary_changes: tuple[tuple[str, str, str, str], ...]
-    completion_changes: tuple[tuple[str, str, str], ...]
-    id_map: tuple[tuple[str, str], ...]
-    newly_created_then_collected: tuple[str, ...]
-    argument_dependency_changes: tuple[tuple[str, str, str, str], ...]
-    interface_changes: tuple[tuple[str, str, str, str], ...]
-    ordering_repairs: tuple[tuple[str, str, str, str], ...]
-    faults: tuple[tuple[str, str, tuple[str, ...]], ...]
-    violations: tuple[tuple[str, str, tuple[str, ...]], ...]
+    affected_roots: tuple[Ref, ...]
+    touched_nodes: tuple[Ref, ...]
+    removed_nodes: tuple[Removal, ...]
+    removed_edges: tuple[EdgeChange, ...]
+    replacement_boundary_changes: tuple[EdgeChange, ...]
+    completion_changes: tuple[CompletionEvent, ...]
+    id_map: tuple[Renaming, ...]
+    newly_created_then_collected: tuple[Ref, ...]
+    argument_dependency_changes: tuple[EdgeChange, ...]
+    interface_changes: tuple[EdgeChange, ...]
+    ordering_repairs: tuple[EdgeChange, ...]
+    faults: tuple[Report, ...]
+    violations: tuple[Report, ...]
     accepted: bool
     assembled_snapshot: dict | None
     resulting_snapshot: dict
-    collected: tuple[str, ...]
+    collected: tuple[Ref, ...]
     handover: str
 
     @property
@@ -368,26 +572,31 @@ class RevisionRecord:
             "normalizations": list(self.normalizations),
             "parse_errors": [[line, message] for line, message in self.parse_errors],
             "empty_revision": self.empty_revision,
-            "affected_roots": list(self.affected_roots),
-            "touched_nodes": list(self.touched_nodes),
-            "removed_nodes": [list(pair) for pair in self.removed_nodes],
-            "removed_edges": [list(change) for change in self.removed_edges],
-            "replacement_boundary_changes": [list(change) for change
+            "id_spaces": {
+                PREVIOUS: "ids in previous_snapshot",
+                REVISION: "labels the model wrote in its revision",
+                ASSEMBLED: "canonical ids in assembled_snapshot, kept by resulting_snapshot",
+            },
+            "affected_roots": [r.to_dict() for r in self.affected_roots],
+            "touched_nodes": [r.to_dict() for r in self.touched_nodes],
+            "removed_nodes": [r.to_dict() for r in self.removed_nodes],
+            "removed_edges": [c.to_dict() for c in self.removed_edges],
+            "replacement_boundary_changes": [c.to_dict() for c
                                              in self.replacement_boundary_changes],
-            "completion_changes": [list(change) for change in self.completion_changes],
-            "id_map": [list(pair) for pair in self.id_map],
-            "newly_created_then_collected": list(self.newly_created_then_collected),
-            "argument_dependency_changes": [list(change) for change
+            "completion_changes": [c.to_dict() for c in self.completion_changes],
+            "id_map": [m.to_dict() for m in self.id_map],
+            "newly_created_then_collected": [r.to_dict() for r
+                                             in self.newly_created_then_collected],
+            "argument_dependency_changes": [c.to_dict() for c
                                             in self.argument_dependency_changes],
-            "interface_changes": [list(change) for change in self.interface_changes],
-            "ordering_repairs": [list(change) for change in self.ordering_repairs],
-            "faults": [[code, message, list(nodes)] for code, message, nodes in self.faults],
-            "violations": [[code, message, list(nodes)]
-                           for code, message, nodes in self.violations],
+            "interface_changes": [c.to_dict() for c in self.interface_changes],
+            "ordering_repairs": [c.to_dict() for c in self.ordering_repairs],
+            "faults": [f.to_dict() for f in self.faults],
+            "violations": [v.to_dict() for v in self.violations],
             "accepted": self.accepted,
             "assembled_snapshot": self.assembled_snapshot,
             "resulting_snapshot": self.resulting_snapshot,
-            "collected": list(self.collected),
+            "collected": [r.to_dict() for r in self.collected],
             "handover": self.handover,
         }
 
@@ -401,6 +610,8 @@ class RevisionRecord:
         for name in ("accepted", "empty_revision"):
             if isinstance(raw[name], int) and not isinstance(raw[name], bool):
                 raise ArtifactError(f"revision record {name}: expected true or false")
+        if set(raw["id_spaces"]) != set(ID_SPACES):
+            raise ArtifactError(f"revision record id_spaces: expected {', '.join(ID_SPACES)}")
         call = _call_from_dict(raw["model_call"])
         if raw["prompt_sha"] != prompt_sha(call.system):
             raise ArtifactError("revision record prompt_sha does not hash the system message "
@@ -421,67 +632,91 @@ class RevisionRecord:
 
         attempts = tuple(_attempt(item) for item in raw["attempts"])
         _check_attempts(attempts)
-        normalizations = tuple(_strings(raw["normalizations"], "normalizations"))
-        parse_errors = tuple(_parse_error(item) for item in raw["parse_errors"])
-        removed_nodes = tuple(_removal(item) for item in raw["removed_nodes"])
-        removed_edges = tuple(_interface_change(item, "removed_edges")
-                              for item in raw["removed_edges"])
-        boundary = tuple(_interface_change(item, "replacement_boundary_changes")
-                         for item in raw["replacement_boundary_changes"])
-        completion = tuple(_completion_change(item) for item in raw["completion_changes"])
-        id_map = tuple(_pair(item, "id_map") for item in raw["id_map"])
-        stillborn = tuple(_strings(raw["newly_created_then_collected"],
-                                   "newly_created_then_collected"))
-        interface_changes = tuple(_interface_change(item) for item in raw["interface_changes"])
-        argument_changes = tuple(_interface_change(item, "argument_dependency_changes")
-                                 for item in raw["argument_dependency_changes"])
-        ordering_repairs = tuple(_interface_change(item, "ordering_repairs")
-                                 for item in raw["ordering_repairs"])
-        faults = tuple(_violation(item) for item in raw["faults"])
-        violations = tuple(_violation(item) for item in raw["violations"])
-        collected = tuple(_strings(raw["collected"], "collected"))
+        fields = dict(
+            normalizations=tuple(_strings(raw["normalizations"], "normalizations")),
+            parse_errors=tuple(_parse_error(item) for item in raw["parse_errors"]),
+            affected_roots=_refs(raw["affected_roots"], "affected_roots", PREVIOUS),
+            touched_nodes=_refs(raw["touched_nodes"], "touched_nodes", PREVIOUS),
+            removed_nodes=tuple(Removal.from_dict(item) for item in raw["removed_nodes"]),
+            removed_edges=_edges(raw["removed_edges"], "removed_edges", PREVIOUS),
+            replacement_boundary_changes=_edges(raw["replacement_boundary_changes"],
+                                                "replacement_boundary_changes", ASSEMBLED),
+            completion_changes=tuple(CompletionEvent.from_dict(item)
+                                     for item in raw["completion_changes"]),
+            id_map=tuple(Renaming.from_dict(item) for item in raw["id_map"]),
+            newly_created_then_collected=_refs(raw["newly_created_then_collected"],
+                                               "newly_created_then_collected", ASSEMBLED),
+            argument_dependency_changes=_edges(raw["argument_dependency_changes"],
+                                               "argument_dependency_changes", ASSEMBLED),
+            interface_changes=_edges(raw["interface_changes"], "interface_changes", ASSEMBLED),
+            ordering_repairs=_edges(raw["ordering_repairs"], "ordering_repairs", ASSEMBLED),
+            faults=tuple(Report.from_dict(item, "faults") for item in raw["faults"]),
+            violations=tuple(Report.from_dict(item, "violations") for item in raw["violations"]),
+            collected=_refs(raw["collected"], "collected", ASSEMBLED),
+        )
+        _check_removal_spaces(fields["removed_nodes"])
+        _check_completion_spaces(fields["completion_changes"])
         _check_revision_outcome(raw)
 
         return cls(
             goal=raw["goal"], rules=raw["rules"], delta_h=raw["delta_h"],
             previous_snapshot=raw["previous_snapshot"], model_call=call,
-            raw_output=raw["raw_output"], attempts=attempts, normalizations=normalizations,
-            parse_errors=parse_errors, empty_revision=raw["empty_revision"],
-            affected_roots=tuple(_strings(raw["affected_roots"], "affected_roots")),
-            touched_nodes=tuple(_strings(raw["touched_nodes"], "touched_nodes")),
-            removed_nodes=removed_nodes, removed_edges=removed_edges,
-            replacement_boundary_changes=boundary, completion_changes=completion, id_map=id_map,
-            newly_created_then_collected=stillborn,
-            argument_dependency_changes=argument_changes, interface_changes=interface_changes,
-            ordering_repairs=ordering_repairs, faults=faults, violations=violations,
-            accepted=raw["accepted"], assembled_snapshot=assembled,
-            resulting_snapshot=raw["resulting_snapshot"], collected=collected,
-            handover=raw["handover"],
+            raw_output=raw["raw_output"], attempts=attempts,
+            empty_revision=raw["empty_revision"], accepted=raw["accepted"],
+            assembled_snapshot=assembled, resulting_snapshot=raw["resulting_snapshot"],
+            handover=raw["handover"], **fields,
         )
 
 
 _REVISION_FIELD_TYPES: dict[str, object] = {
     "goal": str, "rules": str, "delta_h": str, "previous_snapshot": dict,
     "model_call": dict, "prompt_sha": str, "raw_output": str, "attempts": list,
-    "normalizations": list,
-    "parse_errors": list, "empty_revision": bool, "affected_roots": list, "touched_nodes": list,
+    "normalizations": list, "parse_errors": list, "empty_revision": bool, "id_spaces": dict,
+    "affected_roots": list, "touched_nodes": list,
     "removed_nodes": list, "removed_edges": list, "replacement_boundary_changes": list,
     "completion_changes": list, "id_map": list, "newly_created_then_collected": list,
-    "argument_dependency_changes": list,
-    "interface_changes": list, "ordering_repairs": list, "faults": list, "violations": list,
+    "argument_dependency_changes": list, "interface_changes": list, "ordering_repairs": list,
+    "faults": list, "violations": list,
     "accepted": bool, "assembled_snapshot": None, "resulting_snapshot": dict,
     "collected": list, "handover": str,
 }
 
-_REMOVAL_REASONS = ("affected_region", "region_internal", "invalidated_information")
-_COMPLETION_ACTIONS = ("became_available", "producer_removed", "content_replaced",
-                       "provenance_materialized")
+
+def _refs(raw: list, where: str, space: str) -> tuple[Ref, ...]:
+    """Read references and hold each field to the one graph it can be talking about."""
+    refs = tuple(Ref.from_dict(item, where) for item in raw)
+    wrong = [r for r in refs if r.space != space]
+    if wrong:
+        raise ArtifactError(f"record {where}: holds {space} references, and found "
+                            f"{', '.join(str(r) for r in wrong)}")
+    return refs
 
 
-def _pair(item: object, where: str) -> tuple[str, str]:
-    if not isinstance(item, list) or len(item) != 2 or not all(isinstance(x, str) for x in item):
-        raise ArtifactError(f"revision record {where}: {item!r} is not a pair of names")
-    return item[0], item[1]
+def _edges(raw: list, where: str, space: str) -> tuple[EdgeChange, ...]:
+    changes = tuple(EdgeChange.from_dict(item, where) for item in raw)
+    wrong = [r for c in changes for r in (c.source, c.target) if r.space != space]
+    if wrong:
+        raise ArtifactError(f"record {where}: holds {space} references, and found "
+                            f"{', '.join(str(r) for r in wrong)}")
+    return changes
+
+
+def _check_removal_spaces(removals: tuple[Removal, ...]) -> None:
+    """A removed node is gone, so it has no assembled identity and can only be a previous one."""
+    wrong = [r for r in removals if r.node.space != PREVIOUS]
+    if wrong:
+        raise ArtifactError("record removed_nodes: a removed node exists only in the previous "
+                            f"graph, and found {', '.join(str(r.node) for r in wrong)}")
+
+
+def _check_completion_spaces(events: tuple[CompletionEvent, ...]) -> None:
+    for event in events:
+        if event.node.space != ASSEMBLED:
+            raise ArtifactError("record completion_changes: the information node is the one in "
+                                f"the assembled graph, and found {event.node}")
+        if event.producer is not None and event.producer.space != PREVIOUS:
+            raise ArtifactError("record completion_changes: the producer was removed and exists "
+                                f"only in the previous graph, and found {event.producer}")
 
 
 def _attempt(item: object) -> tuple[int, str, str]:
@@ -510,24 +745,6 @@ def _check_attempts(attempts: tuple[tuple[int, str, str], ...]) -> None:
                             "and there would be no record if none had")
     if "completion" in outcomes[:-1]:
         raise ArtifactError("revision record attempts: a completion is not retried")
-
-
-def _removal(item: object) -> tuple[str, str]:
-    node, reason = _pair(item, "removed_nodes")
-    if reason not in _REMOVAL_REASONS:
-        raise ArtifactError(f"revision record removed_nodes: {reason!r} is not one of "
-                            f"{', '.join(_REMOVAL_REASONS)}")
-    return node, reason
-
-
-def _completion_change(item: object) -> tuple[str, str, str]:
-    if not isinstance(item, list) or len(item) != 3 or not all(isinstance(x, str) for x in item):
-        raise ArtifactError(f"revision record completion_changes: {item!r} is not an action, "
-                            "a node and a detail")
-    if item[0] not in _COMPLETION_ACTIONS:
-        raise ArtifactError(f"revision record completion_changes: {item[0]!r} is not one of "
-                            f"{', '.join(_COMPLETION_ACTIONS)}")
-    return item[0], item[1], item[2]
 
 
 def _check_revision_outcome(raw: dict) -> None:

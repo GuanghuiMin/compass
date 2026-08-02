@@ -136,6 +136,12 @@ def test_it_distinguishes_a_new_name_from_an_anchor(prompt):
                   "a bare name")
 
 
+def test_it_says_a_used_label_must_be_declared(prompt):
+    """The code cannot invent the node it would have to create: it knows neither the kind, the
+    availability, the description nor the payload."""
+    assert says(prompt, "must have exactly one declaration in the revision")
+
+
 def test_it_says_one_information_node_is_shared_rather_than_copied(prompt):
     assert any_of(prompt, "it is the same information node on both sides",
                   "do not declare a new one that means the same thing")

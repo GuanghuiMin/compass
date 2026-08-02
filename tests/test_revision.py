@@ -464,6 +464,74 @@ def test_an_anchor_that_names_nothing_is_refused(nursery):
     assert "unknown_anchor" in codes(applied)
 
 
+def test_a_label_used_but_never_declared_is_reported_once_with_all_its_uses(nursery):
+    """Boundary 2 of the recurrent run. The code cannot invent the node -- it knows neither the
+    kind, the availability, the description nor the payload -- so this stays a refusal. What it can
+    do is say the whole thing once instead of once per mention."""
+    applied = revise(nursery, wrapped(
+        "REPLACE c2\nreason-for-replacement: the messages have to be fetched first\n"
+        "COMPUTATION +search\ndescription: Retrieve the messages\n"
+        "operation: phone.search\nrequires: i1\nproduces: +messages\nEND_COMPUTATION\n"
+        "COMPUTATION +parse\ndescription: Parse the messages\n"
+        "requires: +messages\nafter: +search\nEND_COMPUTATION\n"
+        "END_REPLACE\n"
+        "REVISE c3\nremove-after: c2\nadd-after: +parse\nEND_REVISE"))
+    undeclared = [f for f in applied.faults if f.code == "undeclared_new_label"]
+    assert len(undeclared) == 1
+    fault = undeclared[0]
+    assert fault.nodes == ("+messages",)
+    assert fault.sites == ("+search.produces", "+parse.requires")
+    assert "+messages" in fault.message
+
+
+def test_a_reference_into_a_removed_region_is_also_reported_once(nursery):
+    applied = revise(nursery, wrapped(
+        "REPLACE c1\nreason-for-replacement: everything changes\nno-longer-requires: i1\n"
+        "COMPUTATION +a\ndescription: something\nafter: c2\nEND_COMPUTATION\n"
+        "COMPUTATION +b\ndescription: something else\nafter: c2\nEND_COMPUTATION\n"
+        "END_REPLACE"))
+    removed = [f for f in applied.faults if f.code == "reference_into_removed_region"]
+    assert len(removed) == 1
+    assert removed[0].sites == ("+a.after", "+b.after")
+
+
+def test_a_bare_name_that_names_nothing_says_how_a_new_node_is_written(nursery):
+    applied = revise(nursery, wrapped(
+        "ADD\nCOMPUTATION +a\ndescription: d\nrequires: i9\nEND_COMPUTATION\nEND_ADD"))
+    fault = next(f for f in applied.faults if f.code == "unknown_anchor")
+    assert "+i9" in fault.message
+
+
+def test_a_declaration_that_reuses_the_replaced_name_commits():
+    """The same shape the recurrent run refused: refine an abstract leaf in place, giving the
+    replacement the name the leaf had."""
+    previous = build(
+        nodes=[C(id="c1", description="Do the whole job"),
+               C(id="c2", description="First part", operation="nursery.first"),
+               C(id="c3", description="Work out the rest"),
+               I(id="i1", kind=K.FACT, description="The starting facts", available=True)],
+        edges=[("c1", R.REFINES, "c2"), ("c1", R.REFINES, "c3"),
+               ("i1", R.INTERFACE_INPUT, "c1"), ("i1", R.REQUIRES, "c2"),
+               ("c2", R.PRECEDES, "c3")])
+    applied, replacement = commit(previous, wrapped(
+        "REPLACE c3\nreason-for-replacement: it is understood well enough to break down now\n"
+        "COMPUTATION c3\ndescription: Work out the rest\n"
+        "refined-into: +look, +decide\nafter: c2\nEND_COMPUTATION\n"
+        "COMPUTATION +look\ndescription: Look at what the first part produced\n"
+        "operation: nursery.look\nrequires: i1\nEND_COMPUTATION\n"
+        "COMPUTATION +decide\ndescription: Decide what to do\n"
+        "operation: nursery.decide\nafter: +look\nEND_COMPUTATION\n"
+        "END_REPLACE"))
+    assert applied.faults == ()
+    assert replacement.accepted, [str(v) for v in replacement.violations]
+    graph = replacement.graph
+    rest = next(n.id for n in graph.computations if n.description == "Work out the rest")
+    children = {graph.node(c).description for c in graph.refinement_children_of(rest)}
+    assert children == {"Look at what the first part produced", "Decide what to do"}
+    top = next(n.id for n in graph.computations if n.description == "Do the whole job")
+    assert rest in graph.refinement_children_of(top)
+
+
 # --------------------------------------------------------------------------- completion
 
 def test_completing_work_establishes_what_it_promised(promised):

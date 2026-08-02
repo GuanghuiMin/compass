@@ -30,14 +30,21 @@ class RevisionError(ValueError):
 
 @dataclass(frozen=True)
 class Fault:
-    """One reason a revision was refused, in the same shape as a validation violation."""
+    """One reason a revision was refused, in the same shape as a validation violation.
+
+    `nodes` names entities the model wrote: previous-snapshot anchors, or its own `+labels`.
+    `sites` names the fields they appeared in, which are not entities and are kept apart so a
+    reader never has to guess which of the two a string is.
+    """
     code: str
     message: str
     nodes: tuple[str, ...] = ()
+    sites: tuple[str, ...] = ()
 
     def __str__(self) -> str:
         where = f" [{', '.join(self.nodes)}]" if self.nodes else ""
-        return f"{self.code}: {self.message}{where}"
+        at = f" at {', '.join(self.sites)}" if self.sites else ""
+        return f"{self.code}: {self.message}{where}{at}"
 
 
 # --------------------------------------------------------------------------- what the model writes
@@ -168,11 +175,17 @@ class CompletionChange:
 
     The semantic fact -- that the completed work established this -- came from the model. The code
     only carries it out, and the record has to show which of the two happened.
+
+    `node_id` is always the information node in the assembled graph. `producer_id` is the
+    computation that was going to produce it, which exists only in the previous graph: it is
+    carried in its own field rather than folded into `node_id`, because two ids from two snapshots
+    in one field is exactly the confusion an artifact must not create.
     """
     action: str            # "became_available" | "producer_removed" | "content_replaced"
                            # | "provenance_materialized"
     node_id: str
     detail: str = ""
+    producer_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -213,8 +226,8 @@ class _Application:
         self.computation_ids = {c.id for c in previous.computations}
         self.information_ids = {i.id for i in previous.information}
 
-    def fail(self, code: str, message: str, *nodes: str) -> None:
-        self.faults.append(Fault(code, message, tuple(nodes)))
+    def fail(self, code: str, message: str, *nodes: str, sites: tuple[str, ...] = ()) -> None:
+        self.faults.append(Fault(code, message, tuple(nodes), sites))
 
     # ------------------------------------------------------------------ entry
     def run(self) -> Applied:
@@ -568,17 +581,23 @@ class _Application:
 
     def _check_references(self, ops, identity, region, removed_information) -> None:
         gone = region | removed_information
+        sites: dict[str, list[str]] = {}
         for op in ops:
             for computation in getattr(op, "computations", ()):
-                names = (list(computation.requires) + list(computation.produces)
-                         + list(computation.refined_into) + list(computation.after)
-                         + [v.information_id for v in computation.arguments.values()
-                            if isinstance(v, InformationReference)])
-                for name in names:
-                    self._check_reference(name, identity, gone, computation.label)
+                for field, names in (("requires", computation.requires),
+                                     ("produces", computation.produces),
+                                     ("refined-into", computation.refined_into),
+                                     ("after", computation.after),
+                                     ("argument", [v.information_id
+                                                   for v in computation.arguments.values()
+                                                   if isinstance(v, InformationReference)])):
+                    for name in names:
+                        sites.setdefault(name, []).append(f"{computation.label}.{field}")
             if isinstance(op, ReviseComputation):
-                for name in (*op.add_requires, *op.add_after):
-                    self._check_reference(name, identity, gone, op.anchor)
+                for field, names in (("add-requires", op.add_requires),
+                                     ("add-after", op.add_after)):
+                    for name in names:
+                        sites.setdefault(name, []).append(f"{op.anchor}.{field}")
                 # Dropping a relation to something this revision removed is the point of dropping
                 # it, so these are checked against the graph the model was shown, not the result.
                 for name in (*op.remove_requires, *op.remove_after):
@@ -586,14 +605,24 @@ class _Application:
                         self.fail("unknown_anchor",
                                   f"{name!r} names nothing in the previous graph", op.anchor, name)
 
-    def _check_reference(self, name, identity, gone, where) -> None:
-        if name in gone:
-            self.fail("reference_into_removed_region",
-                      f"{name!r} was removed by this revision and cannot be referred to", where,
-                      name)
-        elif name not in identity:
-            self.fail("unknown_anchor", f"{name!r} names nothing in the resulting graph", where,
-                      name)
+        # One fault per name rather than one per mention. A label used in four places is one
+        # mistake, and reporting it four times buries whatever else went wrong.
+        for name, where in sites.items():
+            if name in gone:
+                self.fail("reference_into_removed_region",
+                          f"{name!r} was removed by this revision and cannot be referred to by "
+                          f"{', '.join(where)}", name, sites=tuple(where))
+            elif name in identity:
+                continue
+            elif name.startswith("+"):
+                self.fail("undeclared_new_label",
+                          f"{name} is referenced by {', '.join(where)} and has no declaration in "
+                          "this revision", name, sites=tuple(where))
+            else:
+                self.fail("unknown_anchor",
+                          f"{name!r} names nothing in the previous graph, and a new node is "
+                          f"written +{name}; referenced by {', '.join(where)}", name,
+                          sites=tuple(where))
 
     def _build(self, ops, roots, region, removed_information, completion, identity,
                surviving_computations, surviving_information, new_computations, new_information):
@@ -640,8 +669,9 @@ class _Application:
                 removed.append(EdgeChange("removed", edge.source, edge.relation, edge.target))
                 if (edge.relation is Relation.PRODUCES and edge.target in completion):
                     completion_changes.append(CompletionChange(
-                        "producer_removed", edge.target,
-                        f"produced by {edge.source}, which completed"))
+                        "producer_removed", identity[edge.target],
+                        "the computation that was going to produce it completed",
+                        producer_id=edge.source))
                 continue
             if edge.relation is Relation.REQUIRES and (edge.target, edge.source) in dropped:
                 removed.append(EdgeChange("removed", edge.source, edge.relation, edge.target))
