@@ -1,0 +1,65 @@
+{
+ "schema_version": 1,
+ "pass": "first",
+ "note": "One record per decision point. The rubric beside this file defines the classes; this file fixes the shape a tool may write and a later stage may read.",
+ "record": {
+  "packet_id": {
+   "type": "string",
+   "required": true,
+   "constraint": "32 lowercase hex characters, and present in inputs/diagnostic/manifest.json"
+  },
+  "event_class": {
+   "type": "string",
+   "required": true,
+   "one_of": [
+    "ordinary_progress",
+    "progressive_refinement",
+    "structural_revision",
+    "terminal_transition",
+    "indeterminate"
+   ]
+  },
+  "revision_subtypes": {
+   "type": "array",
+   "required": true,
+   "items_one_of": [
+    "new_prerequisite",
+    "path_or_branch_invalidated",
+    "goal_or_constraint_revised"
+   ],
+   "constraint": "non-empty only when event_class is structural_revision, empty otherwise; order is not meaningful and values do not repeat"
+  },
+  "terminal_stage": {
+   "type": "string or null",
+   "required": true,
+   "one_of": ["ready", "confirmed", null],
+   "constraint": "non-null only when event_class is terminal_transition"
+  }
+ },
+ "file": {
+  "format": "JSON Lines, one record per line, append only",
+  "first_line": "a header object, not a record",
+  "header": {
+   "rubric_sha256": "sha256 of inputs/diagnostic/rubric.md",
+   "annotation_schema_sha256": "sha256 of this file",
+   "public_manifest_sha256": "sha256 of inputs/diagnostic/manifest.json",
+   "chain_index_sha256": "sha256 of the external chain index",
+   "viewer_commit": "the repository HEAD the viewer ran at",
+   "annotator_id": "a stable self-chosen identifier",
+   "independence_attestation": "I had not viewed the graph, plan, summary, audit, or method outputs for these trajectories before primary annotation.",
+   "attested_at": "ISO 8601 UTC",
+   "started_at": "ISO 8601 UTC"
+  },
+  "completion": {
+   "sidecar": "<labels file>.sha256",
+   "note": "The final hash cannot live inside the file it hashes. It is written beside it, with the label count and the completion time, once the last label is in and the file is closed. Any later edit makes the sidecar fail.",
+   "fields": ["sha256", "label_count", "completed_at"]
+  }
+ },
+ "invariants": [
+  "exactly one primary record per packet_id",
+  "a record is written when the annotator advances and is read-only afterwards",
+  "records appear in the order the chain was read",
+  "adjudication is a separate file and never rewrites a primary record"
+ ]
+}
