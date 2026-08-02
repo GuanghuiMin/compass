@@ -36,14 +36,23 @@ A meaningful unresolved future computation — "obtain a usable Venmo access tok
 requested payment succeeded". Not an API call, not a past step, not a variable, not an observation, not
 a reminder to continue.
 
-A computation is **coarse** when it has at least one outgoing `REFINES` edge, and a **leaf** when it
-has none. There is no field saying which: the edges say it. A leaf may be concrete, carrying the
-operation and arguments it will run with, or still unworked-out, carrying neither — an obligation the
-plan holds but has not yet broken down. An unworked-out leaf is still a leaf and still reaches the
-frontier when its dependencies are met, because "work out how to do this" is work.
+Three kinds, and the words are used in exactly these senses throughout this document and the prompt:
 
-A coarse computation carries no `operation` and no `arguments`. The work is its children's, and so is
-the dataflow: §2.4 gives it an interface instead.
+| | |
+| --- | --- |
+| **refined computation** | has outgoing `REFINES` edges, and therefore an interface (§3.1) |
+| **abstract leaf** | no refinement children, and no operation: an obligation the plan holds and has not broken down |
+| **concrete leaf** | no refinement children, described at executable detail with its operation and arguments |
+
+There is no field saying which. The edges say it, and a leaf is any computation with no children.
+
+**An abstract leaf is a leaf, not a small refined computation.** It has no children, it uses
+`REQUIRES` and `PRODUCES` like any other leaf, it carries no interface, and it reaches the frontier
+when its dependencies are met — because working out how to do something is work, and the way it gets
+worked out is that the next regeneration refines it.
+
+A refined computation carries no `operation` and no `arguments`. The work is its children's, and so is
+the dataflow: §3.1 gives it an interface instead.
 
 ```python
 @dataclass(frozen=True)
@@ -152,22 +161,22 @@ class Relation(str, Enum):
     REQUIRES = "requires"                  # Information -> Computation
     PRODUCES = "produces"                  # Computation -> Information
     REFINES = "refines"                    # Computation -> Computation, parent -> child
-    INTERFACE_INPUT = "interface_input"    # Information -> coarse Computation
-    INTERFACE_OUTPUT = "interface_output"  # coarse Computation -> Information
+    INTERFACE_INPUT = "interface_input"    # Information -> refined Computation
+    INTERFACE_OUTPUT = "interface_output"  # refined Computation -> Information
 ```
 
 Those six endpoint pairings are the only valid ones. `PRECEDES` expresses an execution dependency
 that is not already carried by produced information, and it expresses nothing else: it never means
 containment.
 
-`REFINES` runs from a coarse computation to each computation it was broken into. It says what is part
+`REFINES` runs from a refined computation to each computation it was broken into. It says what is part
 of what, in the graph as it stands now, and it is the only relation that says so.
 
-A computation has at most one incoming `REFINES` edge — it belongs to one unit of work — and a coarse
+A computation has at most one incoming `REFINES` edge — it belongs to one unit of work — and a refined
 computation may have as many outgoing ones as it has children. Refinement may nest: a child may itself
-be coarse.
+be refined.
 
-What is still not in the graph is provenance across a transition. That the coarse computation in the
+What is still not in the graph is provenance across a transition. That the refined computation in the
 previous snapshot was replaced by a different set of children in this one is a fact about the
 transition, and it belongs in the transition artifact where analysis can read it. `REFINES` is not
 that: it holds between two computations that are both present now, and it is re-stated by every
@@ -175,7 +184,7 @@ regeneration like everything else in the graph.
 
 ### 3.1 The interface across a refinement boundary
 
-A coarse computation does not require or produce. It declares what it needs from outside itself and
+A refined computation does not require or produce. It declares what it needs from outside itself and
 what it will leave behind, and its leaves do the consuming and producing:
 
 | | |
@@ -188,6 +197,12 @@ not a second node describing the same thing, not an entry in a table beside the 
 match inferred from a name or a description. Identity is the whole mechanism, and it is what lets one
 token, one identifier or one confirmed interface exist once and be consumed by leaves in different
 branches.
+
+**The interface is complete, not optional.** It is not a set of annotations that must be realized if
+present; it is exactly the set of information that crosses the boundary, and §6 invariant 10 compares
+the two in both directions. A refinement that reaches outside itself without saying so is refused, and
+so is one that declares something which never crosses. Without that, declaring an interface would be a
+courtesy and the coupling this design exists for would not hold.
 
 ---
 
@@ -241,15 +256,28 @@ whatever else was in the same graph.
 6. **No history.** No completed or invalidated computation is present.
 7. **No orphan structure.** No dangling edge, no duplicate id within a snapshot, no unknown relation.
 8. **One parent.** Every computation has at most one incoming `REFINES` edge.
-9. **Roles.** A coarse computation carries no `operation`, no `arguments`, and no `REQUIRES` or
+9. **Roles.** A refined computation carries no `operation`, no `arguments`, and no `REQUIRES` or
    `PRODUCES` edge. A leaf carries no `INTERFACE_INPUT` or `INTERFACE_OUTPUT` edge, because an
    interface with no descendants is realized by nothing.
-10. **Interface realization.** For each coarse computation: every `INTERFACE_INPUT` information node
-    is required, through `REQUIRES`, by at least one descendant leaf; and every `INTERFACE_OUTPUT`
-    information node that is **not available** is produced, through `PRODUCES`, by exactly one
-    descendant leaf. An `INTERFACE_OUTPUT` that is already available needs no producer at all — what
-    established it has left the graph, which is how a completed computation collapses while its
-    output stays for whatever still consumes it.
+10. **Complete boundaries.** For a refined computation `p`, write `D(p)` for its refinement
+    descendants and `L(p)` for its descendant leaves.
+
+    An information node **crosses in** when some leaf in `L(p)` requires it and no computation in
+    `D(p)` produces it. The nodes declared `INTERFACE_INPUT` on `p` are exactly those.
+
+    An unavailable information node **crosses out** when exactly one leaf in `L(p)` produces it and
+    at least one consumer lies outside `D(p)`. The unavailable nodes declared `INTERFACE_OUTPUT` on
+    `p` are exactly those. A declared output that is **already available** carries no producer inside
+    `D(p)` at all and still has a consumer outside it — what established it has left the graph, which
+    is how a completed computation collapses while its output stays for whatever consumes it next.
+
+    Both are set equalities, so each is refused from both sides: an undeclared crossing, and a
+    declaration that crosses nothing. Something a refinement both produces and consumes internally is
+    not an interface and must not be declared as one.
+
+    Each boundary is judged alone, and that is what makes the rules compose. Information one child
+    establishes and another child consumes crosses each of those two boundaries and not the boundary
+    of the parent they share.
 
 Invariants 8 to 10 are checked on the candidate as a whole, and every traversal they need terminates
 on a graph that violates them: a candidate with a refinement cycle or a child with two parents is
@@ -293,7 +321,7 @@ A completed computation does not appear in the new graph. If its result is still
 an available information node wired to the computations that consume it; if it is not needed, it and
 its result both go.
 
-This applies at every level. A coarse computation whose children have all run leaves with them, and
+This applies at every level. A refined computation whose children have all run leaves with them, and
 what survives of the whole subtree is the information the rest of the work consumes. A refinement that
 turned out to be wrong is replaced the same way: the children are simply absent from the next graph,
 and what their failure established becomes an available `failure_consequence` required by whatever
@@ -346,7 +374,7 @@ any of its refinement ancestors, and every information node with a `REQUIRES` ed
 available.
 
 **Ordering inherits downward and requirements do not**, and the asymmetry is deliberate. If something
-must happen before a coarse computation, it must happen before every part of that computation;
+must happen before a refined computation, it must happen before every part of that computation;
 otherwise refining a blocked computation would quietly unblock it, and the frontier would depend on
 how finely the plan was written rather than on what the work needs. A requirement, by contrast, is
 declared where it is used, so a leaf that does not need what its parent needs can still run.
@@ -373,9 +401,15 @@ Where the graph is refined, three sections, and each computation in exactly one 
 
 | | |
 | --- | --- |
-| `OVERALL REMAINING PLAN` | every coarse root: what it is for, its interface, its children's ids |
-| `ACTIVE REFINEMENT` | the path down to the executable leaves, and those leaves in full |
+| `REFINED PLAN OVERVIEW` | every refined root: what it is for, its interface, its children's ids |
+| `ACTIVE WORK` | what can run now, in full, and whatever stands above it |
 | `LATER COMPUTATIONS` | the leaves that are visible and cannot run yet |
+
+The first section holds the refined roots and is named for that rather than for the whole plan, which
+it is not: an abstract leaf that was never refined is a root with nothing to overview, and it appears
+in one of the other two sections where it can be acted on. The second is `ACTIVE WORK` and not
+`ACTIVE REFINEMENT` for the same reason — an executable abstract leaf lands there and is not a
+refinement path.
 
 A refined subtree that contains no executable leaf is **not expanded**. Its parent states what it needs
 and what it will establish, which is what a reader deciding what to do next uses; its internals are
@@ -522,7 +556,7 @@ The model sees no discarded history, no runtime, no registry and no state held a
 ### 12.2 What it returns
 
 One complete replacement graph in the protocol form. Never a patch, never a diff, never part of a
-graph. The prompt carries the grammar and exactly one abstract example — a coarse computation refined
+graph. The prompt carries the grammar and exactly one abstract example — a refined computation
 into two children, declaring one interface input that a child requires and one interface output that a
 child produces, and a later computation ordered after the whole of it — with no application, interface,
 name or task from any benchmark in it. The example teaches the form, including that the interface and

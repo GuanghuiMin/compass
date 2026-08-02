@@ -174,42 +174,111 @@ def _coarse_and_leaf_roles(graph: StateGraph) -> list[Violation]:
 
 
 def _interface_realization(graph: StateGraph) -> list[Violation]:
-    """The coarse interface and the execution below it name the same information nodes.
+    """A refinement boundary is complete: its interface is everything that crosses it.
 
-    Not a similar node, not a copy of the value, not an entry in a table beside the graph. The
-    identity is the check: an input a coarse node declares is required by a leaf underneath it,
-    and an output it promises is produced by one.
+    Not merely "whatever was declared is realized". That would leave declaring optional, and a
+    coarse computation could reach outside itself without saying so -- which is the difference
+    between a boundary and an annotation. The declared set and the crossing set are compared in
+    both directions, so an undeclared crossing and a declaration that crosses nothing are each a
+    refusal.
+
+    The identity is the whole mechanism: not a similar node, not a copy of the value, not an entry
+    in a table beside the graph, and never a match inferred from a name.
+
+    Each boundary is judged on its own, which is what makes the rules compose. Information one
+    child establishes and another child consumes crosses each of those two boundaries and not the
+    boundary of the parent they share.
     """
     out: list[Violation] = []
-    declared = {node.id for node in graph.information}
+    known = {node.id for node in graph.information}
     for computation in graph.computations:
         if not graph.is_coarse(computation.id):
             continue
+        inside = set(graph.refinement_descendants_of(computation.id))
         leaves = graph.descendant_leaves_of(computation.id)
+        produced_inside = {i for c in inside for i in graph.produces_of(c)}
+        required_inside = {i for leaf in leaves for i in graph.requires_of(leaf)}
+        out += _crossing_inputs(graph, computation.id, known, required_inside, produced_inside)
+        out += _crossing_outputs(graph, computation.id, known, inside, leaves)
+    return out
 
-        for information_id in graph.interface_inputs_of(computation.id):
-            if information_id not in declared:
-                continue                  # already reported as dangling
-            if not any(information_id in graph.requires_of(leaf) for leaf in leaves):
-                out.append(Violation(
-                    "unrealized_interface_input",
-                    "a coarse computation declares an input that no descendant leaf requires",
-                    (computation.id, information_id)))
 
-        for information_id in graph.interface_outputs_of(computation.id):
-            if information_id not in declared:
-                continue
-            if graph.node(information_id).available:
-                # Already established. Whatever produced it has left the graph, which is how a
-                # completed computation collapses while its output stays for what comes next.
-                continue
-            producers = [leaf for leaf in leaves if information_id in graph.produces_of(leaf)]
-            if len(producers) != 1:
+def _crossing_inputs(graph: StateGraph, coarse_id: str, known: set[str],
+                     required_inside: set[str], produced_inside: set[str]) -> list[Violation]:
+    """Information the refined work needs and does not establish for itself."""
+    declared = {i for i in graph.interface_inputs_of(coarse_id) if i in known}
+    crossing = {i for i in required_inside if i not in produced_inside} & known
+
+    out: list[Violation] = []
+    for information_id in sorted(crossing - declared):
+        out.append(Violation(
+            "undeclared_interface_input",
+            "a leaf inside this refinement requires information from outside it, and the coarse "
+            "computation does not declare it as an interface input",
+            (coarse_id, information_id)))
+    for information_id in sorted(declared - crossing):
+        if information_id not in required_inside:
+            out.append(Violation(
+                "unrealized_interface_input",
+                "a coarse computation declares an input that no descendant leaf requires",
+                (coarse_id, information_id)))
+        else:
+            out.append(Violation(
+                "internal_information_declared_as_input",
+                "a coarse computation declares as an interface input something its own refinement "
+                "produces, so it does not cross the boundary",
+                (coarse_id, information_id)))
+    return out
+
+
+def _crossing_outputs(graph: StateGraph, coarse_id: str, known: set[str],
+                      inside: set[str], leaves: tuple[str, ...]) -> list[Violation]:
+    """Information the refined work establishes for something outside itself."""
+    def producers_of(information_id: str) -> list[str]:
+        return [leaf for leaf in leaves if information_id in graph.produces_of(leaf)]
+
+    def consumers_outside(information_id: str) -> list[str]:
+        return [c for c in graph.consumers_of(information_id) if c not in inside]
+
+    declared = [i for i in graph.interface_outputs_of(coarse_id) if i in known]
+    out: list[Violation] = []
+
+    for information_id in declared:
+        producers = producers_of(information_id)
+        if graph.node(information_id).available:
+            # Already established, so whatever produced it has left the graph. That is how a
+            # completed computation collapses while its output stays for what comes next, and it
+            # is why a descendant still producing it would be a contradiction.
+            if producers:
                 out.append(Violation(
-                    "unrealized_interface_output",
-                    "a coarse computation promises information that is not available yet, so "
-                    f"exactly one descendant leaf must produce it, and {len(producers)} do",
-                    (computation.id, information_id, *producers)))
+                    "available_interface_output_is_produced_inside",
+                    "a coarse computation declares an output that already exists and is also "
+                    "produced by one of its own leaves",
+                    (coarse_id, information_id, *producers)))
+                continue
+        elif len(producers) != 1:
+            out.append(Violation(
+                "unrealized_interface_output",
+                "a coarse computation promises information that is not available yet, so "
+                f"exactly one descendant leaf must produce it, and {len(producers)} do",
+                (coarse_id, information_id, *producers)))
+            continue
+        if not consumers_outside(information_id):
+            out.append(Violation(
+                "internal_information_declared_as_output",
+                "a coarse computation declares as an interface output something nothing outside "
+                "the refinement consumes, so it does not cross the boundary",
+                (coarse_id, information_id)))
+
+    for information_id in sorted({i for leaf in leaves for i in graph.produces_of(leaf)} & known):
+        if information_id in declared or graph.node(information_id).available:
+            continue
+        if len(producers_of(information_id)) == 1 and consumers_outside(information_id):
+            out.append(Violation(
+                "undeclared_interface_output",
+                "a leaf inside this refinement establishes information consumed outside it, and "
+                "the coarse computation does not declare it as an interface output",
+                (coarse_id, information_id)))
     return out
 
 

@@ -66,12 +66,15 @@ def _render_flat(graph: StateGraph) -> str:
 
 
 def _render_refined(graph: StateGraph) -> str:
-    """The plan at its coarsest, the work being done now in full, and what follows it.
+    """The refined plan, the work being done now in full, and what follows it.
 
     Three sections and each computation in exactly one of them. A distant subtree that has been
     refined is not expanded: its parent states what it needs and what it will establish, which is
     what a reader deciding what to do next actually uses, and its internals would be detail about
     work that is not happening yet.
+
+    The first section covers the refined roots and not the whole remaining plan, and it is named
+    for what it holds. An abstract leaf that is a root of nothing appears where it can be acted on.
     """
     ordered = ordered_computations(graph)
     executable = {c.id for c in ordered if is_executable(graph, c.id)}
@@ -98,10 +101,13 @@ def _render_refined(graph: StateGraph) -> str:
             written.add(computation.id)
             lines.extend(block(graph, computation, seen))
 
-    section("OVERALL REMAINING PLAN", coarse_roots, _coarse_block)
+    section("REFINED PLAN OVERVIEW", coarse_roots, _coarse_block)
 
+    # ACTIVE WORK rather than ACTIVE REFINEMENT: what lands here is whatever can run and whatever
+    # stands above it, and an executable abstract leaf that was never refined is not a refinement
+    # path. The selection is unchanged; only the name was wrong.
     on_the_path = [c for c in ordered if c.id in active and c.id not in written]
-    section("ACTIVE REFINEMENT", on_the_path,
+    section("ACTIVE WORK", on_the_path,
             lambda g, c, s: (_coarse_block(g, c, s) if g.is_coarse(c.id)
                              else _computation_block(g, c, s)))
 

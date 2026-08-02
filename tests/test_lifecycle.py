@@ -139,19 +139,27 @@ def test_information_survives_while_any_leaf_still_requires_it():
     assert [i.id for i in g.information] == ["i1"]
 
 
-def test_a_dead_interface_output_is_collected():
-    """A promised output nothing downstream consumes is still garbage."""
+def test_information_produced_inside_a_refinement_and_wanted_nowhere_is_collected():
+    """The only kind of dead information a sound refined graph can hold.
+
+    A *declared* interface output cannot be dead: the boundary rules require it to have a consumer
+    outside the refinement, and a node with a consumer is not garbage. What can be dead is a result
+    a leaf produces that nothing asks for, which crosses no boundary and so is declared nowhere.
+    """
     g = build(nodes=[comp("c1", description="Gather the records"),
                      comp("c2", description="Retrieve the pages"),
                      info("i2", description="the gathered records")],
-              edges=[("c1", Relation.REFINES, "c2"), ("c1", Relation.INTERFACE_OUTPUT, "i2"),
-                     ("c2", Relation.PRODUCES, "i2")])
+              edges=[("c1", Relation.REFINES, "c2"), ("c2", Relation.PRODUCES, "i2")])
     assert collect_dead_information(g) == ("i2",)
     assert g.information == ()
 
 
 def test_an_interface_edge_alone_does_not_keep_information_alive():
-    """Liveness reads real consumers. A declaration is not a consumer."""
+    """Liveness reads real consumers. A declaration is not a consumer.
+
+    Validation would refuse this graph, because c1 declares an input no descendant requires. That
+    is the point: collection is exercised on its own and does not depend on validation having run.
+    """
     g = build(nodes=[comp("c1", description="Gather the records"),
                      comp("c2", description="Retrieve the pages"), info("i1")],
               edges=[("c1", Relation.REFINES, "c2"), ("i1", Relation.INTERFACE_INPUT, "c1")])
@@ -159,14 +167,14 @@ def test_an_interface_edge_alone_does_not_keep_information_alive():
 
 
 def test_collection_leaves_the_refinement_invariants_holding():
-    """Removing the dead output cannot break the interface, because both edges go with the node."""
+    """A sound refined graph stays sound after its dead information goes."""
     g = build(nodes=[comp("c1", description="Gather the records"),
                      comp("c2", description="Retrieve the pages"),
-                     info("i1"), info("i2", description="the gathered records")],
+                     info("i1"), info("i2", description="a result nobody asked for")],
               edges=[("c1", Relation.REFINES, "c2"), ("i1", Relation.INTERFACE_INPUT, "c1"),
-                     ("i1", Relation.REQUIRES, "c2"),
-                     ("c1", Relation.INTERFACE_OUTPUT, "i2"), ("c2", Relation.PRODUCES, "i2")])
+                     ("i1", Relation.REQUIRES, "c2"), ("c2", Relation.PRODUCES, "i2")])
     assert validate(g) == ()
     assert collect_dead_information(g) == ("i2",)
     assert validate(g) == ()
-    assert g.interface_outputs_of("c1") == ()
+    assert [i.id for i in g.information] == ["i1"]
+    assert g.interface_inputs_of("c1") == ("i1",)

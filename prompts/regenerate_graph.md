@@ -37,46 +37,68 @@ kind:
   them. If one computation produces something the other requires, that already orders them and a
   `PRECEDES` edge would say it twice.
 - `Computation REFINES Computation` — the second is part of how the first gets done. It runs from the
-  coarse computation to each of its children.
+  refined computation to each of its children.
 - `Information INTERFACE_INPUT Computation` — a refined computation needs this from outside itself
 - `Computation INTERFACE_OUTPUT Information` — a refined computation will establish this for whatever
   comes after it
 
-# Coarse work and refined work
+# Three kinds of computation
 
-A computation you have not worked out yet is written coarsely: a description of what has to happen,
-with no operation and no arguments. A computation about to run is written concretely, with the
-operation and the arguments it takes.
+Every computation is exactly one of these, and these words mean only this:
 
-**Distant work stays coarse.** Do not invent the steps of something you have not reached. Write the
-obligation and leave it.
+- an **abstract leaf** has no children and no operation: a description of what has to happen, for work
+  you have not broken down yet;
+- a **concrete leaf** has no children and is written out in full, with the operation it calls and the
+  arguments it takes;
+- a **refined computation** has `REFINES` edges out of it, to the computations it breaks into.
 
-**Near-term work is refined into children.** When the next thing to do is a coarse computation, write
-the computations it breaks into and connect each with a `REFINES` edge from the coarse one to the
-child. Refinement can go more than one level, and a child may itself be refined later.
+**Distant work may remain an abstract leaf.** Do not invent the steps of something you have not
+reached, and do not give it children so that it counts as refined. Write the obligation, with no
+operation and no children. It is a leaf, and it is a perfectly good thing to hand back.
 
-A computation with `REFINES` edges out of it is coarse. It has no operation, no arguments, and no
-`REQUIRES` or `PRODUCES` edges: the work belongs to its children now, and so does the dataflow. What
-it has instead is an interface.
+**Near-term work is refined into children.** When the next thing to do is an abstract leaf, write the
+computations it breaks into and connect each with a `REFINES` edge running from it to the child. It
+stops being a leaf the moment it has one. Refinement can go more than one level, and a child may
+itself be refined later.
 
-**The interface and the work below it name the same information.** Whatever a coarse computation
-declares with `INTERFACE_INPUT` must be required by at least one leaf underneath it, through
-`REQUIRES`, and it must be the same information node — the same `i` id, not a second node describing
-the same thing. Whatever it declares with `INTERFACE_OUTPUT`, if that information is not available
-yet, must be produced by exactly one leaf underneath it. An interface output that is already
-available needs no producer, because whatever established it has already left the graph.
+A refined computation has no operation, no arguments, and no `REQUIRES` or `PRODUCES` edges: the work
+belongs to its children now, and so does the dataflow. What it has instead is an interface. An
+abstract leaf has no interface and uses `REQUIRES` and `PRODUCES` like any other leaf, because it has
+no descendants for an interface to describe.
 
-This is what lets one token, one identifier or one confirmed interface exist once and be used by
-leaves in different branches: one node, several `REQUIRES` edges.
+# The interface is the whole boundary
+
+A refined computation's interface is **exactly** the information that crosses its boundary. Not the
+part that seemed worth mentioning: all of it, and nothing else.
+
+Information crosses **in** when a leaf inside the refinement requires it and nothing inside the
+refinement produces it. Declare every one of those with `INTERFACE_INPUT`, and declare nothing else —
+something the refinement both produces and consumes internally stays internal.
+
+Information crosses **out** when a leaf inside the refinement produces it and something outside
+consumes it. Declare every one of those with `INTERFACE_OUTPUT`, and declare nothing else — a result
+that only the refinement's own leaves consume stays internal, and so does one that nothing consumes
+at all.
+
+An interface output that is **already available** has no producer inside, because whatever
+established it has left the graph; something outside must still consume it, or it does not belong on
+the interface either.
+
+**It is the same information node on both sides.** The same `i` id, not a second node describing the
+same thing. This is what lets one token, one identifier or one confirmed interface exist once and be
+used by leaves in different branches: one node, several `REQUIRES` edges.
+
+Each boundary is judged on its own. Information that one child establishes and another child consumes
+crosses both of those boundaries, and is not on the interface of the parent they share.
 
 **A refinement that turned out to be wrong is replaced, not annotated.** If the slice shows that the
 way you had broken something down cannot work, write different children. The old ones are simply not
 in the graph you return. What the failure established becomes a `failure_consequence` required by
 whatever replaces them, so the same dead end is not tried again.
 
-**Completed work leaves, at whatever level.** A child that has run is gone. A coarse computation whose
-children have all run is gone with them. What survives is the information the rest of the work still
-needs, and only that: an output nothing downstream requires goes too.
+**Completed work leaves, at whatever level.** A child that has run is gone. A refined computation
+whose children have all run is gone with them. What survives is the information the rest of the work
+still needs, and only that: an output nothing downstream requires goes too.
 
 # Rules that decide what is legal
 
@@ -104,9 +126,9 @@ or the slice you were given establish.
 what it established still matters, that becomes an available information node, wired to the
 computations that consume it. If nothing ahead needs it, both the computation and its result are gone.
 
-**Let what happened change the plan.** A coarse computation can be refined into concrete children. A
+**Let what happened change the plan.** An abstract leaf can be refined into concrete children. A
 prerequisite you did not know about can appear, and when it does, the leaf that needs it requires it
-and the coarse computation above declares it as an interface input. A branch that turned out to be
+and every refined computation above it declares it as an interface input. A branch that turned out to be
 impossible is removed rather than kept and marked. A failure that changes what remains becomes a
 `failure_consequence` required by the revised computation — "the search interface does not accept
 partial names" — never a copy of the error message.
@@ -187,7 +209,8 @@ EDGE c1 PRECEDES c4
 END_GRAPH
 ```
 
-`c1` is coarse: it has been refined into `c2` and `c3`, so it carries no operation and no `REQUIRES`
+`c1` is refined into `c2` and `c3`, so it carries no operation and no `REQUIRES`
 or `PRODUCES` edge of its own. It declares that it needs `i1` and will establish `i2`, and the same
 two nodes appear below it — `i1` is required by `c2`, and `i2` is produced by `c3`. `c4` is ordered
-after the whole of `c1`, which is why that `PRECEDES` edge is written at the coarse level.
+after the whole of `c1`, which is why that `PRECEDES` edge is written on `c1` itself. `c3` is an
+abstract leaf: no children and no operation, and it is still a leaf.

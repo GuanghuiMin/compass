@@ -230,7 +230,8 @@ def test_no_two_payload_shapes_render_alike():
 def refined():
     """c1 is being worked on and is expanded; c4 is refined but distant, so it stays shut.
 
-    c2 can run, c3 waits for it, and c4's child c5 is not shown at all.
+    c2 can run, c3 waits for it, and c4's child c5 is not shown at all. i2 crosses out of c1 and
+    into c4, so both boundaries declare it and it is one node throughout.
     """
     return build(
         nodes=[comp("c1", "Gather the records that satisfy the request"),
@@ -249,34 +250,52 @@ def refined():
                ("i1", Relation.INTERFACE_INPUT, "c1"),
                ("c1", Relation.INTERFACE_OUTPUT, "i2"),
                ("i1", Relation.REQUIRES, "c2"), ("c3", Relation.PRODUCES, "i2"),
+               ("i2", Relation.INTERFACE_INPUT, "c4"), ("i2", Relation.REQUIRES, "c5"),
                ("i3", Relation.INTERFACE_INPUT, "c4"), ("i3", Relation.REQUIRES, "c5"),
                ("c2", Relation.PRECEDES, "c3"), ("c1", Relation.PRECEDES, "c4")])
+
+
+def test_the_refined_fixture_is_a_graph_the_validator_accepts():
+    """A rendering fixture that could never be committed would prove nothing about the handover."""
+    from future_graph.validation import validate
+    assert validate(refined()) == ()
 
 
 def test_a_graph_without_refinement_renders_the_way_it_always_has():
     text = render(episode())
     assert "CURRENT COMPUTATIONS" in text
-    assert "OVERALL REMAINING PLAN" not in text
-    assert "ACTIVE REFINEMENT" not in text
+    assert "REFINED PLAN OVERVIEW" not in text
+    assert "ACTIVE WORK" not in text
 
 
-def test_the_coarse_plan_comes_first_and_shows_only_the_interface():
+def test_the_refined_plan_comes_first_and_shows_only_the_interface():
     text = render(refined())
-    plan = text.split("ACTIVE REFINEMENT")[0]
-    assert text.index("OVERALL REMAINING PLAN") == 0
+    plan = text.split("ACTIVE WORK")[0]
+    assert text.index("REFINED PLAN OVERVIEW") == 0
     assert "[c1] Gather the records that satisfy the request" in plan
     assert "[c4] Report the outcome" in plan
     assert "Interface in:" in plan and "Interface out:" in plan
     assert "example.list_records" in plan          # the contract payload, named once
-    assert "Operation:" not in plan                # no execution detail at the coarse level
+    assert "Operation:" not in plan                # no execution detail at the refined level
 
 
-def test_the_active_refinement_shows_the_executable_leaf_in_full():
+def test_active_work_shows_the_executable_leaf_in_full():
     text = render(refined())
-    active = text.split("ACTIVE REFINEMENT")[1].split("LATER COMPUTATIONS")[0]
+    active = text.split("ACTIVE WORK")[1].split("LATER COMPUTATIONS")[0]
     assert "[c2] Retrieve the first page" in active
     assert "Operation: example.list_records" in active
     assert "page = 1" in active
+
+
+def test_active_work_holds_an_executable_abstract_leaf_that_was_never_refined():
+    """Which is why the heading is ACTIVE WORK: what lands here need not be a refinement path."""
+    g = build(nodes=[comp("c1", "Gather the records"), comp("c2", "Retrieve the first page"),
+                     comp("c3", "Send the acknowledgement")],
+              edges=[("c1", Relation.REFINES, "c2")])
+    text = render(g)
+    active = text.split("ACTIVE WORK")[1]
+    assert "[c3] Send the acknowledgement" in active
+    assert g.is_leaf("c3") and not g.refinement_parents_of("c3")
 
 
 def test_a_distant_refined_subtree_is_not_expanded():

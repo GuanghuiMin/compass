@@ -22,15 +22,17 @@ def info(iid, description="the token", available=True, kind=InformationKind.FACT
 
 
 def refined():
-    """c1 is refined into c2 and c3. It needs i1 from outside and will establish i2.
+    """c1 is refined into c2 and c3. i1 crosses into it and i2 crosses out of it.
 
-    i1 is required by c2 and i2 is produced by c3, so both halves of the interface are realized by
-    the same nodes the coarse computation named.
+    i1 is required by c2 and produced nowhere inside, so it crosses in. i2 is produced by c3 and
+    consumed by c4, which is outside the refinement, so it crosses out. Both are declared, and both
+    are the same node on each side of the boundary.
     """
     return build(
         nodes=[comp("c1", "Gather the records that satisfy the request"),
                comp("c2", "Retrieve the first page"),
                comp("c3", "Continue until no page remains"),
+               comp("c4", "Apply the change to each record"),
                info("i1", "the confirmed listing interface"),
                info("i2", "the gathered records", available=False,
                     kind=InformationKind.RESULT)],
@@ -38,6 +40,7 @@ def refined():
                ("i1", Relation.INTERFACE_INPUT, "c1"),
                ("c1", Relation.INTERFACE_OUTPUT, "i2"),
                ("i1", Relation.REQUIRES, "c2"), ("c3", Relation.PRODUCES, "i2"),
+               ("i2", Relation.REQUIRES, "c4"),
                ("c2", Relation.PRECEDES, "c3")])
 
 
@@ -57,7 +60,7 @@ def test_the_hierarchy_is_read_off_the_edges():
     assert g.refinement_parents_of("c2") == ("c1",)
     assert g.refinement_parents_of("c1") == ()
     assert g.is_coarse("c1") and not g.is_leaf("c1")
-    assert g.is_leaf("c2") and g.is_leaf("c3")
+    assert g.is_leaf("c2") and g.is_leaf("c3") and g.is_leaf("c4")
     assert g.descendant_leaves_of("c1") == ("c2", "c3")
     assert g.interface_inputs_of("c1") == ("i1",)
     assert g.interface_outputs_of("c1") == ("i2",)
@@ -141,11 +144,21 @@ def test_a_coarse_input_no_descendant_requires_is_refused():
     assert "unrealized_interface_input" in codes(g)
 
 
-def test_a_coarse_input_realized_by_a_grandchild_is_accepted():
+def test_an_input_crossing_two_nested_boundaries_is_declared_on_both():
+    """Required test 7. i1 comes from outside c1, so it crosses c1's boundary and c2's."""
+    g = build(nodes=[comp("c1"), comp("c2"), comp("c3"), info("i1")],
+              edges=[("c1", Relation.REFINES, "c2"), ("c2", Relation.REFINES, "c3"),
+                     ("i1", Relation.INTERFACE_INPUT, "c1"),
+                     ("i1", Relation.INTERFACE_INPUT, "c2"),
+                     ("i1", Relation.REQUIRES, "c3")])
+    assert validate(g) == ()
+
+
+def test_an_input_crossing_two_boundaries_declared_on_only_the_outer_one_is_refused():
     g = build(nodes=[comp("c1"), comp("c2"), comp("c3"), info("i1")],
               edges=[("c1", Relation.REFINES, "c2"), ("c2", Relation.REFINES, "c3"),
                      ("i1", Relation.INTERFACE_INPUT, "c1"), ("i1", Relation.REQUIRES, "c3")])
-    assert validate(g) == ()
+    assert "undeclared_interface_input" in codes(g)
 
 
 def test_a_coarse_input_required_only_outside_the_subtree_is_refused():
@@ -188,12 +201,126 @@ def test_an_available_coarse_output_needs_no_producer():
 
 def test_an_interface_output_is_not_counted_as_a_producer():
     """Availability still asks for exactly one PRODUCES edge, and the interface edge is not one."""
-    g = build(nodes=[comp("c1"), comp("c2"),
+    g = build(nodes=[comp("c1"), comp("c2"), comp("c3", "Use the records"),
                      info("i2", "the gathered records", available=False,
                           kind=InformationKind.RESULT)],
               edges=[("c1", Relation.REFINES, "c2"), ("c1", Relation.INTERFACE_OUTPUT, "i2"),
-                     ("c2", Relation.PRODUCES, "i2")])
+                     ("c2", Relation.PRODUCES, "i2"), ("i2", Relation.REQUIRES, "c3")])
     assert g.producers_of("i2") == ("c2",)
+    assert validate(g) == ()
+
+
+# --------------------------------------------------------------------------- complete boundaries
+#
+# The interface is not a set of annotations that must be realized if present. It is exactly the
+# information that crosses the boundary, so each of these compares the declared set against the
+# crossing set in one direction or the other.
+
+def test_a_crossing_input_that_is_not_declared_is_refused():
+    """Required test 1. c2 reaches outside the refinement and c1 does not admit it."""
+    g = build(nodes=[comp("c1"), comp("c2"), info("i1")],
+              edges=[("c1", Relation.REFINES, "c2"), ("i1", Relation.REQUIRES, "c2")])
+    assert "undeclared_interface_input" in codes(g)
+
+
+def test_information_produced_inside_may_not_be_declared_as_an_input():
+    """Required test 2. i1 never crosses anything: the refinement makes it and uses it."""
+    g = build(nodes=[comp("c1"), comp("c2"), comp("c3"),
+                     info("i1", available=False, kind=InformationKind.RESULT)],
+              edges=[("c1", Relation.REFINES, "c2"), ("c1", Relation.REFINES, "c3"),
+                     ("c2", Relation.PRODUCES, "i1"), ("i1", Relation.REQUIRES, "c3"),
+                     ("i1", Relation.INTERFACE_INPUT, "c1")])
+    assert "internal_information_declared_as_input" in codes(g)
+
+
+def test_information_produced_inside_and_used_inside_needs_no_interface():
+    """The same graph without the false declaration is sound."""
+    g = build(nodes=[comp("c1"), comp("c2"), comp("c3"),
+                     info("i1", available=False, kind=InformationKind.RESULT)],
+              edges=[("c1", Relation.REFINES, "c2"), ("c1", Relation.REFINES, "c3"),
+                     ("c2", Relation.PRODUCES, "i1"), ("i1", Relation.REQUIRES, "c3")])
+    assert validate(g) == ()
+
+
+def test_a_crossing_output_that_is_not_declared_is_refused():
+    """Required test 3. c2 establishes something c3 uses from outside, and c1 stays silent."""
+    g = build(nodes=[comp("c1"), comp("c2"), comp("c3", "Use the records"),
+                     info("i1", available=False, kind=InformationKind.RESULT)],
+              edges=[("c1", Relation.REFINES, "c2"), ("c2", Relation.PRODUCES, "i1"),
+                     ("i1", Relation.REQUIRES, "c3")])
+    assert "undeclared_interface_output" in codes(g)
+
+
+def test_information_consumed_only_inside_may_not_be_declared_as_an_output():
+    """Required test 4. Nothing outside c1 wants i1, so it does not cross out."""
+    g = build(nodes=[comp("c1"), comp("c2"), comp("c3"),
+                     info("i1", available=False, kind=InformationKind.RESULT)],
+              edges=[("c1", Relation.REFINES, "c2"), ("c1", Relation.REFINES, "c3"),
+                     ("c2", Relation.PRODUCES, "i1"), ("i1", Relation.REQUIRES, "c3"),
+                     ("c1", Relation.INTERFACE_OUTPUT, "i1")])
+    assert "internal_information_declared_as_output" in codes(g)
+
+
+def test_an_available_interface_output_still_produced_inside_is_refused():
+    """Required test 5. It cannot both already exist and be about to be established."""
+    g = build(nodes=[comp("c1"), comp("c2"), comp("c3", "Use the records"),
+                     info("i1", "the gathered records")],
+              edges=[("c1", Relation.REFINES, "c2"), ("c1", Relation.INTERFACE_OUTPUT, "i1"),
+                     ("c2", Relation.PRODUCES, "i1"), ("i1", Relation.REQUIRES, "c3")])
+    assert "available_interface_output_is_produced_inside" in codes(g)
+
+
+def test_an_available_interface_output_nothing_outside_consumes_is_refused():
+    g = build(nodes=[comp("c1"), comp("c2"), info("i1", "the gathered records")],
+              edges=[("c1", Relation.REFINES, "c2"), ("c1", Relation.INTERFACE_OUTPUT, "i1"),
+                     ("i1", Relation.REQUIRES, "c2")])
+    assert "internal_information_declared_as_output" in codes(g)
+
+
+def crossing_only_the_inner_boundary():
+    """c5 establishes i1 and c3 uses it. Both are inside c1, so i1 is c2's interface, not c1's."""
+    return build(
+        nodes=[comp("c1", "The whole job"), comp("c2", "The part that reads"),
+               comp("c3", "Read one page"), comp("c5", "Work out where to start"),
+               info("i1", "the starting point", available=False, kind=InformationKind.RESULT)],
+        edges=[("c1", Relation.REFINES, "c2"), ("c1", Relation.REFINES, "c5"),
+               ("c2", Relation.REFINES, "c3"),
+               ("c5", Relation.PRODUCES, "i1"), ("i1", Relation.REQUIRES, "c3"),
+               ("i1", Relation.INTERFACE_INPUT, "c2")])
+
+
+def test_information_crossing_only_the_inner_boundary_is_declared_only_there():
+    """Required test 6. One child establishes it, another child's subtree consumes it."""
+    g = crossing_only_the_inner_boundary()
+    assert validate(g) == ()
+    assert g.interface_inputs_of("c2") == ("i1",)
+    assert g.interface_inputs_of("c1") == () and g.interface_outputs_of("c1") == ()
+
+
+@pytest.mark.parametrize("extra,code", [
+    (("i1", Relation.INTERFACE_INPUT, "c1"), "internal_information_declared_as_input"),
+    (("c1", Relation.INTERFACE_OUTPUT, "i1"), "internal_information_declared_as_output"),
+])
+def test_the_shared_parent_may_not_declare_what_stays_inside_it(extra, code):
+    g = crossing_only_the_inner_boundary()
+    g.add_edge(*extra)
+    assert code in codes(g)
+
+
+def test_a_refinement_that_declares_no_interface_at_all_is_refused_when_it_reaches_out():
+    """The blocker this repair exists for: silence is not an empty interface."""
+    g = build(nodes=[comp("c1"), comp("c2"), comp("c3", "Use the records"),
+                     info("i1"), info("i2", available=False, kind=InformationKind.RESULT)],
+              edges=[("c1", Relation.REFINES, "c2"), ("i1", Relation.REQUIRES, "c2"),
+                     ("c2", Relation.PRODUCES, "i2"), ("i2", Relation.REQUIRES, "c3")])
+    assert g.interface_inputs_of("c1") == () and g.interface_outputs_of("c1") == ()
+    assert set(codes(g)) >= {"undeclared_interface_input", "undeclared_interface_output"}
+
+
+def test_a_refinement_that_reaches_nothing_needs_no_interface():
+    """An empty interface is legitimate when nothing actually crosses."""
+    g = build(nodes=[comp("c1"), comp("c2", "Do the whole thing locally")],
+              edges=[("c1", Relation.REFINES, "c2")])
     assert validate(g) == ()
 
 
@@ -250,4 +377,4 @@ def test_an_accepted_refined_candidate_becomes_the_state():
     from future_graph.lifecycle import replace
     result = replace(StateGraph(), refined())
     assert result.accepted
-    assert [c.id for c in result.graph.computations] == ["c1", "c2", "c3"]
+    assert [c.id for c in result.graph.computations] == ["c1", "c2", "c3", "c4"]
