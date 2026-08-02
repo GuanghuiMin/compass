@@ -36,6 +36,15 @@ A meaningful unresolved future computation — "obtain a usable Venmo access tok
 requested payment succeeded". Not an API call, not a past step, not a variable, not an observation, not
 a reminder to continue.
 
+A computation is **coarse** when it has at least one outgoing `REFINES` edge, and a **leaf** when it
+has none. There is no field saying which: the edges say it. A leaf may be concrete, carrying the
+operation and arguments it will run with, or still unworked-out, carrying neither — an obligation the
+plan holds but has not yet broken down. An unworked-out leaf is still a leaf and still reaches the
+frontier when its dependencies are met, because "work out how to do this" is work.
+
+A coarse computation carries no `operation` and no `arguments`. The work is its children's, and so is
+the dataflow: §2.4 gives it an interface instead.
+
 ```python
 @dataclass(frozen=True)
 class ComputationNode:
@@ -139,18 +148,46 @@ between snapshots, never a flip of availability on one node.
 
 ```python
 class Relation(str, Enum):
-    PRECEDES = "precedes"     # Computation -> Computation
-    REQUIRES = "requires"     # Information -> Computation
-    PRODUCES = "produces"     # Computation -> Information
+    PRECEDES = "precedes"                  # Computation -> Computation
+    REQUIRES = "requires"                  # Information -> Computation
+    PRODUCES = "produces"                  # Computation -> Information
+    REFINES = "refines"                    # Computation -> Computation, parent -> child
+    INTERFACE_INPUT = "interface_input"    # Information -> coarse Computation
+    INTERFACE_OUTPUT = "interface_output"  # coarse Computation -> Information
 ```
 
-Those three endpoint pairings are the only valid ones. `PRECEDES` expresses an execution dependency
-that is not already carried by produced information.
+Those six endpoint pairings are the only valid ones. `PRECEDES` expresses an execution dependency
+that is not already carried by produced information, and it expresses nothing else: it never means
+containment.
 
-Refinement lineage is not in the persistent graph. That an old coarse computation was replaced by three
-new ones is provenance about a transition; it belongs in the transition artifact, where analysis can
-read it, and nowhere else. Keeping it in the state produced a second relation living outside the graph
-and disagreeing with it.
+`REFINES` runs from a coarse computation to each computation it was broken into. It says what is part
+of what, in the graph as it stands now, and it is the only relation that says so.
+
+A computation has at most one incoming `REFINES` edge — it belongs to one unit of work — and a coarse
+computation may have as many outgoing ones as it has children. Refinement may nest: a child may itself
+be coarse.
+
+What is still not in the graph is provenance across a transition. That the coarse computation in the
+previous snapshot was replaced by a different set of children in this one is a fact about the
+transition, and it belongs in the transition artifact where analysis can read it. `REFINES` is not
+that: it holds between two computations that are both present now, and it is re-stated by every
+regeneration like everything else in the graph.
+
+### 3.1 The interface across a refinement boundary
+
+A coarse computation does not require or produce. It declares what it needs from outside itself and
+what it will leave behind, and its leaves do the consuming and producing:
+
+| | |
+| --- | --- |
+| `INTERFACE_INPUT` | information the refined work needs from outside |
+| `INTERFACE_OUTPUT` | information the refined work will establish for what comes after |
+
+**The interface and the execution below it name the same information nodes.** Not a copy of the value,
+not a second node describing the same thing, not an entry in a table beside the graph, and never a
+match inferred from a name or a description. Identity is the whole mechanism, and it is what lets one
+token, one identifier or one confirmed interface exist once and be consumed by leaves in different
+branches.
 
 ---
 
@@ -203,6 +240,21 @@ whatever else was in the same graph.
    failure; the validator does not add it.
 6. **No history.** No completed or invalidated computation is present.
 7. **No orphan structure.** No dangling edge, no duplicate id within a snapshot, no unknown relation.
+8. **One parent.** Every computation has at most one incoming `REFINES` edge.
+9. **Roles.** A coarse computation carries no `operation`, no `arguments`, and no `REQUIRES` or
+   `PRODUCES` edge. A leaf carries no `INTERFACE_INPUT` or `INTERFACE_OUTPUT` edge, because an
+   interface with no descendants is realized by nothing.
+10. **Interface realization.** For each coarse computation: every `INTERFACE_INPUT` information node
+    is required, through `REQUIRES`, by at least one descendant leaf; and every `INTERFACE_OUTPUT`
+    information node that is **not available** is produced, through `PRODUCES`, by exactly one
+    descendant leaf. An `INTERFACE_OUTPUT` that is already available needs no producer at all — what
+    established it has left the graph, which is how a completed computation collapses while its
+    output stays for whatever still consumes it.
+
+Invariants 8 to 10 are checked on the candidate as a whole, and every traversal they need terminates
+on a graph that violates them: a candidate with a refinement cycle or a child with two parents is
+exactly the input these checks exist to report, so nothing may follow the hierarchy as though it were
+sound.
 
 ### 6.1 What validation deliberately does not check
 
@@ -241,6 +293,14 @@ A completed computation does not appear in the new graph. If its result is still
 an available information node wired to the computations that consume it; if it is not needed, it and
 its result both go.
 
+This applies at every level. A coarse computation whose children have all run leaves with them, and
+what survives of the whole subtree is the information the rest of the work consumes. A refinement that
+turned out to be wrong is replaced the same way: the children are simply absent from the next graph,
+and what their failure established becomes an available `failure_consequence` required by whatever
+replaced them. Information the removed branch was the last consumer of has no `REQUIRES` edge left and
+is collected by rule 5 above; information another branch still requires keeps that edge and stays.
+Nothing here is a judgement, and nothing reconnects an edge the generator did not write.
+
 Failure is not stored as an error message. A failure that changes what remains becomes an available
 `failure_consequence` information node required by the revised computation — "search_user is not a
 supported Venmo interface", required by "find users through the confirmed search_users interface".
@@ -277,11 +337,24 @@ is collected, which is the same rule as everywhere else.
 
 ## 9. Frontier
 
-Derived, never stored. A computation is executable when it has no incoming `PRECEDES` edge from another
-computation in the graph and every information node with a `REQUIRES` edge into it is available.
+Derived, never stored. **Only leaves are executable.** A computation that has been refined is not work
+waiting to be done; it has been said in more detail below, and offering it would offer the same job
+twice.
 
-Everything held up is held up visibly: by a `PRECEDES` edge from unfinished work, or by a `REQUIRES`
-edge from information that is not yet available — whose producer is upstream in the same graph.
+A leaf is executable when no `PRECEDES` edge from a computation still in the graph points at it or at
+any of its refinement ancestors, and every information node with a `REQUIRES` edge into it is
+available.
+
+**Ordering inherits downward and requirements do not**, and the asymmetry is deliberate. If something
+must happen before a coarse computation, it must happen before every part of that computation;
+otherwise refining a blocked computation would quietly unblock it, and the frontier would depend on
+how finely the plan was written rather than on what the work needs. A requirement, by contrast, is
+declared where it is used, so a leaf that does not need what its parent needs can still run.
+
+Everything held up is held up visibly: by a `PRECEDES` edge from unfinished work, at its own level or
+above it, or by a `REQUIRES` edge from information that is not yet available — whose producer is
+upstream in the same graph. Coarse computations are not reported as blocked; they are not waiting for
+anything, and what holds their children up is reported on the children.
 
 ---
 
@@ -290,6 +363,28 @@ edge from information that is not yet available — whose producer is upstream i
 Only the future, in topological order, frontier first, later work after. No completed-history section,
 no corrections section, no raw trajectory, no status, no transition provenance. The renderer is
 deterministic.
+
+**A graph with no `REFINES` edge renders exactly as it always has**, headings included. This is a
+branch in the renderer rather than a property that happens to hold, because the frozen replays and
+every artifact they produced were rendered by that path, and a heading changed for tidiness would
+invalidate all of them silently.
+
+Where the graph is refined, three sections, and each computation in exactly one of them:
+
+| | |
+| --- | --- |
+| `OVERALL REMAINING PLAN` | every coarse root: what it is for, its interface, its children's ids |
+| `ACTIVE REFINEMENT` | the path down to the executable leaves, and those leaves in full |
+| `LATER COMPUTATIONS` | the leaves that are visible and cannot run yet |
+
+A refined subtree that contains no executable leaf is **not expanded**. Its parent states what it needs
+and what it will establish, which is what a reader deciding what to do next uses; its internals are
+detail about work that is not happening.
+
+Every information node the reader can see is defined exactly once, at its first structural mention, and
+referred to by id afterwards. Information that only a hidden subtree touches is not rendered at all: a
+definition with nothing visible to consume it would be the free-floating note this format exists to
+avoid.
 
 Information is defined at its first structural mention in rendered order: under its future producer
 when one exists, and otherwise under its first consumer. Every later mention is the id alone.
@@ -427,10 +522,12 @@ The model sees no discarded history, no runtime, no registry and no state held a
 ### 12.2 What it returns
 
 One complete replacement graph in the protocol form. Never a patch, never a diff, never part of a
-graph. The prompt carries the grammar and exactly one abstract example — an available information node
-required by a computation, that computation producing an unavailable result, that result required by a
-second computation, and a `PRECEDES` edge — with no application, interface, name or task from any
-benchmark in it. The example teaches the form, and does not suggest that work comes in two steps.
+graph. The prompt carries the grammar and exactly one abstract example — a coarse computation refined
+into two children, declaring one interface input that a child requires and one interface output that a
+child produces, and a later computation ordered after the whole of it — with no application, interface,
+name or task from any benchmark in it. The example teaches the form, including that the interface and
+the work below it name the same information nodes, and does not suggest that work comes in any
+particular number of steps.
 
 ### 12.3 The pipeline
 

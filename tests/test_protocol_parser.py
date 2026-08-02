@@ -291,7 +291,7 @@ def test_an_unknown_information_kind_is_rejected():
 
 def test_an_unknown_relation_is_rejected():
     assert "is not a relation" in messages(WHOLE.replace("EDGE i1 REQUIRES c1",
-                                                         "EDGE i1 REFINES c1"))
+                                                         "EDGE i1 SUPPORTS c1"))
 
 
 def test_a_block_without_its_end_is_rejected():
@@ -363,7 +363,7 @@ def test_every_error_is_reported_not_just_the_first():
     text = ("BEGIN_GRAPH\n"
             "INFO i1\nkind: memory\navailable: perhaps\ndescription: d\nEND_INFO\n"
             "COMPUTATION c1\npriority: high\nEND_COMPUTATION\n"
-            "EDGE i1 REFINES c1\n"
+            "EDGE i1 SUPPORTS c1\n"
             "END_GRAPH\n")
     reported = messages(text)
     assert "is not a relation" in reported
@@ -372,8 +372,36 @@ def test_every_error_is_reported_not_just_the_first():
 
 
 def test_any_error_means_no_graph_at_all():
-    outcome = parse(WHOLE.replace("EDGE i1 REQUIRES c1", "EDGE i1 REFINES c1"))
+    # SUPPORTS, because REFINES became a relation and no longer serves as a word the grammar
+    # does not know. What this test is about is that one bad line costs the whole graph.
+    outcome = parse(WHOLE.replace("EDGE i1 REQUIRES c1", "EDGE i1 SUPPORTS c1"))
     assert outcome.errors and outcome.graph is None
+
+
+def test_a_refinement_and_its_interface_round_trip():
+    """The three relations refinement adds are written and read back without losing an edge."""
+    g = build(nodes=[ComputationNode(id="c1", description="Gather the records"),
+                     ComputationNode(id="c2", description="Retrieve the pages"),
+                     InformationNode(id="i1", kind=InformationKind.FACT,
+                                     description="the listing interface", available=True),
+                     InformationNode(id="i2", kind=InformationKind.RESULT,
+                                     description="the gathered records", available=False)],
+              edges=[("c1", Relation.REFINES, "c2"),
+                     ("i1", Relation.INTERFACE_INPUT, "c1"),
+                     ("c1", Relation.INTERFACE_OUTPUT, "i2"),
+                     ("i1", Relation.REQUIRES, "c2"), ("c2", Relation.PRODUCES, "i2")])
+    text = to_protocol(g)
+    assert "EDGE c1 REFINES c2" in text
+    assert "EDGE i1 INTERFACE_INPUT c1" in text
+    assert "EDGE c1 INTERFACE_OUTPUT i2" in text
+    assert parse(text).graph == g
+
+
+def test_a_refinement_edge_tolerates_lower_case_like_any_other():
+    text = WHOLE.replace("EDGE c1 PRECEDES c2", "edge c1 refines c2")
+    outcome = parse(text)
+    assert outcome.errors == ()
+    assert outcome.graph.refinement_children_of("c1") == ("c2",)
 
 
 def test_errors_carry_a_line_number():

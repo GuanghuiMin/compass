@@ -10,6 +10,11 @@ the text reads top to bottom with nothing referred to before it has been defined
 
 A rendered scalar keeps the type the graph holds: `7` and `"7"` are different states and must not read
 the same. The protocol's canonical form is reused rather than reimplemented, so the two cannot drift.
+
+Where the graph is refined, active work is shown in full and distant work stays coarse. Every piece of
+information the reader can see is still defined exactly once; information that only a hidden subtree
+touches is not shown at all, because a definition with nothing visible to consume it is the free-
+floating note this format exists to avoid.
 """
 
 from __future__ import annotations
@@ -18,13 +23,25 @@ from .frontier import is_executable, ordered_computations
 from .protocol import format_scalar
 from .schema import (
     ComputationNode, ContractPayload, InformationNode, InformationReference, ListPayload,
-    MappingPayload, RuntimeReferencePayload, ScalarPayload,
+    MappingPayload, Relation, RuntimeReferencePayload, ScalarPayload,
 )
 from .state_graph import StateGraph
 
 
 def render(graph: StateGraph) -> str:
-    """A deterministic view of the remaining work."""
+    """A deterministic view of the remaining work.
+
+    A graph with no refinement in it takes the path it has always taken and comes out byte for
+    byte as before. That is a branch rather than a promise on purpose: the frozen replays and the
+    artifacts they produced were rendered by `_render_flat`, and a heading renamed for the sake of
+    tidiness would silently invalidate every one of them.
+    """
+    if graph.edges_of(Relation.REFINES):
+        return _render_refined(graph)
+    return _render_flat(graph)
+
+
+def _render_flat(graph: StateGraph) -> str:
     ordered = ordered_computations(graph)
     now = [c for c in ordered if is_executable(graph, c.id)]
     later = [c for c in ordered if not is_executable(graph, c.id)]
@@ -46,6 +63,85 @@ def render(graph: StateGraph) -> str:
     if not lines:
         return "NOTHING REMAINS"
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_refined(graph: StateGraph) -> str:
+    """The plan at its coarsest, the work being done now in full, and what follows it.
+
+    Three sections and each computation in exactly one of them. A distant subtree that has been
+    refined is not expanded: its parent states what it needs and what it will establish, which is
+    what a reader deciding what to do next actually uses, and its internals would be detail about
+    work that is not happening yet.
+    """
+    ordered = ordered_computations(graph)
+    executable = {c.id for c in ordered if is_executable(graph, c.id)}
+
+    active: set[str] = set()
+    for computation_id in executable:
+        active.add(computation_id)
+        active.update(graph.refinement_ancestors_of(computation_id))
+
+    coarse_roots = [c for c in ordered
+                    if not graph.refinement_parents_of(c.id) and graph.is_coarse(c.id)]
+    seen: set[str] = set()
+    written: set[str] = set()
+    lines: list[str] = []
+
+    def section(title: str, computations: list, block) -> None:
+        if not computations:
+            return
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines.append(title)
+        lines.append("")
+        for computation in computations:
+            written.add(computation.id)
+            lines.extend(block(graph, computation, seen))
+
+    section("OVERALL REMAINING PLAN", coarse_roots, _coarse_block)
+
+    on_the_path = [c for c in ordered if c.id in active and c.id not in written]
+    section("ACTIVE REFINEMENT", on_the_path,
+            lambda g, c, s: (_coarse_block(g, c, s) if g.is_coarse(c.id)
+                             else _computation_block(g, c, s)))
+
+    later = [c for c in ordered
+             if c.id not in written and graph.is_leaf(c.id) and _is_visible(graph, c.id, active)]
+    section("LATER COMPUTATIONS", later, _computation_block)
+
+    if not lines:
+        return "NOTHING REMAINS"
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _is_visible(graph: StateGraph, computation_id: str, active: set[str]) -> bool:
+    """A leaf is shown when it is a root, or when the work it is part of is under way."""
+    ancestors = graph.refinement_ancestors_of(computation_id)
+    if not ancestors:
+        return True
+    return any(ancestor in active for ancestor in ancestors)
+
+
+def _coarse_block(graph: StateGraph, computation: ComputationNode,
+                  seen: set[str]) -> list[str]:
+    """A refined computation: what it is for, and the interface across its boundary."""
+    lines = [f"[{computation.id}] {computation.description}"]
+    inputs = graph.interface_inputs_of(computation.id)
+    if inputs:
+        lines.append("Interface in:")
+        lines += [f"- {_information_line(graph.node(i), seen)}" for i in inputs]
+    outputs = graph.interface_outputs_of(computation.id)
+    if outputs:
+        lines.append("Interface out:")
+        lines += [f"- {_information_line(graph.node(i), seen)}" for i in outputs]
+    children = graph.refinement_children_of(computation.id)
+    if children:
+        lines.append("Refined into: " + ", ".join(children))
+    predecessors = graph.predecessors_of(computation.id)
+    if predecessors:
+        lines.append("Depends on: " + ", ".join(predecessors))
+    lines.append("")
+    return lines
 
 
 def _computation_block(graph: StateGraph, computation: ComputationNode,

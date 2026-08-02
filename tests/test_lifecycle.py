@@ -5,6 +5,7 @@ from future_graph import (
     Relation, StateGraph, build,
 )
 from future_graph.lifecycle import collect_dead_information, replace
+from future_graph.validation import validate
 
 
 def comp(cid="c1", description="Obtain a usable Venmo access token", **kw):
@@ -118,3 +119,54 @@ def test_collection_happens_on_the_accepted_candidate():
 def test_an_empty_candidate_is_a_valid_end_state():
     result = replace(sound(), StateGraph())
     assert result.accepted and len(result.graph) == 0
+
+
+# --------------------------------------------------------------------------- refinement
+
+def test_information_survives_while_any_leaf_still_requires_it():
+    """One token, two branches. Losing one branch must not lose the token."""
+    g = build(nodes=[comp("c1", description="Correct the records"),
+                     comp("c2", description="Update each record"),
+                     comp("c3", description="Verify the corrections"),
+                     comp("c4", description="Re-read each record"), info("i1")],
+              edges=[("c1", Relation.REFINES, "c2"), ("c3", Relation.REFINES, "c4"),
+                     ("i1", Relation.INTERFACE_INPUT, "c1"),
+                     ("i1", Relation.INTERFACE_INPUT, "c3"),
+                     ("i1", Relation.REQUIRES, "c2"), ("i1", Relation.REQUIRES, "c4")])
+    assert collect_dead_information(g) == ()
+    g.remove("c2")
+    assert collect_dead_information(g) == ()
+    assert [i.id for i in g.information] == ["i1"]
+
+
+def test_a_dead_interface_output_is_collected():
+    """A promised output nothing downstream consumes is still garbage."""
+    g = build(nodes=[comp("c1", description="Gather the records"),
+                     comp("c2", description="Retrieve the pages"),
+                     info("i2", description="the gathered records")],
+              edges=[("c1", Relation.REFINES, "c2"), ("c1", Relation.INTERFACE_OUTPUT, "i2"),
+                     ("c2", Relation.PRODUCES, "i2")])
+    assert collect_dead_information(g) == ("i2",)
+    assert g.information == ()
+
+
+def test_an_interface_edge_alone_does_not_keep_information_alive():
+    """Liveness reads real consumers. A declaration is not a consumer."""
+    g = build(nodes=[comp("c1", description="Gather the records"),
+                     comp("c2", description="Retrieve the pages"), info("i1")],
+              edges=[("c1", Relation.REFINES, "c2"), ("i1", Relation.INTERFACE_INPUT, "c1")])
+    assert collect_dead_information(g) == ("i1",)
+
+
+def test_collection_leaves_the_refinement_invariants_holding():
+    """Removing the dead output cannot break the interface, because both edges go with the node."""
+    g = build(nodes=[comp("c1", description="Gather the records"),
+                     comp("c2", description="Retrieve the pages"),
+                     info("i1"), info("i2", description="the gathered records")],
+              edges=[("c1", Relation.REFINES, "c2"), ("i1", Relation.INTERFACE_INPUT, "c1"),
+                     ("i1", Relation.REQUIRES, "c2"),
+                     ("c1", Relation.INTERFACE_OUTPUT, "i2"), ("c2", Relation.PRODUCES, "i2")])
+    assert validate(g) == ()
+    assert collect_dead_information(g) == ("i2",)
+    assert validate(g) == ()
+    assert g.interface_outputs_of("c1") == ()

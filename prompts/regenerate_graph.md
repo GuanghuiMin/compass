@@ -29,13 +29,54 @@ kind:
 - `runtime_reference` — a name the agent bound in code that ran, carried as a name and never a value
 - `failure_consequence` — what a failure means for the work ahead, not the error text
 
-**Relations** are three, and only these three:
+**Relations** are six, and only these six:
 
 - `Information REQUIRES Computation` — the computation needs it
 - `Computation PRODUCES Information` — the computation will establish it
 - `Computation PRECEDES Computation` — an ordering not already implied by information flowing between
   them. If one computation produces something the other requires, that already orders them and a
   `PRECEDES` edge would say it twice.
+- `Computation REFINES Computation` — the second is part of how the first gets done. It runs from the
+  coarse computation to each of its children.
+- `Information INTERFACE_INPUT Computation` — a refined computation needs this from outside itself
+- `Computation INTERFACE_OUTPUT Information` — a refined computation will establish this for whatever
+  comes after it
+
+# Coarse work and refined work
+
+A computation you have not worked out yet is written coarsely: a description of what has to happen,
+with no operation and no arguments. A computation about to run is written concretely, with the
+operation and the arguments it takes.
+
+**Distant work stays coarse.** Do not invent the steps of something you have not reached. Write the
+obligation and leave it.
+
+**Near-term work is refined into children.** When the next thing to do is a coarse computation, write
+the computations it breaks into and connect each with a `REFINES` edge from the coarse one to the
+child. Refinement can go more than one level, and a child may itself be refined later.
+
+A computation with `REFINES` edges out of it is coarse. It has no operation, no arguments, and no
+`REQUIRES` or `PRODUCES` edges: the work belongs to its children now, and so does the dataflow. What
+it has instead is an interface.
+
+**The interface and the work below it name the same information.** Whatever a coarse computation
+declares with `INTERFACE_INPUT` must be required by at least one leaf underneath it, through
+`REQUIRES`, and it must be the same information node — the same `i` id, not a second node describing
+the same thing. Whatever it declares with `INTERFACE_OUTPUT`, if that information is not available
+yet, must be produced by exactly one leaf underneath it. An interface output that is already
+available needs no producer, because whatever established it has already left the graph.
+
+This is what lets one token, one identifier or one confirmed interface exist once and be used by
+leaves in different branches: one node, several `REQUIRES` edges.
+
+**A refinement that turned out to be wrong is replaced, not annotated.** If the slice shows that the
+way you had broken something down cannot work, write different children. The old ones are simply not
+in the graph you return. What the failure established becomes a `failure_consequence` required by
+whatever replaces them, so the same dead end is not tried again.
+
+**Completed work leaves, at whatever level.** A child that has run is gone. A coarse computation whose
+children have all run is gone with them. What survives is the information the rest of the work still
+needs, and only that: an output nothing downstream requires goes too.
 
 # Rules that decide what is legal
 
@@ -63,11 +104,12 @@ or the slice you were given establish.
 what it established still matters, that becomes an available information node, wired to the
 computations that consume it. If nothing ahead needs it, both the computation and its result are gone.
 
-**Let what happened change the plan.** A coarse computation can become a concrete one, or several. A
-prerequisite you did not know about can appear. A branch that turned out to be impossible is removed
-rather than kept and marked. A failure that changes what remains becomes a `failure_consequence`
-required by the revised computation — "the search interface does not accept partial names" — never a
-copy of the error message.
+**Let what happened change the plan.** A coarse computation can be refined into concrete children. A
+prerequisite you did not know about can appear, and when it does, the leaf that needs it requires it
+and the coarse computation above declares it as an interface input. A branch that turned out to be
+impossible is removed rather than kept and marked. A failure that changes what remains becomes a
+`failure_consequence` required by the revised computation — "the search interface does not accept
+partial names" — never a copy of the error message.
 
 **Work interrupted halfway is not marked as in progress.** There is no such state, and you should not
 try to express one. What was achieved becomes available information: the partial result, the point to
@@ -114,28 +156,38 @@ description: The records that satisfy the request
 END_INFO
 
 COMPUTATION c1
-description: Retrieve the records that satisfy the request
+description: Gather the records that satisfy the request
+END_COMPUTATION
+
+COMPUTATION c2
+description: Retrieve the first page of records
 operation: example.list_records
 argument page = 1
 END_COMPUTATION
 
-COMPUTATION c2
-description: Apply the requested change to each retrieved record
+COMPUTATION c3
+description: Continue retrieving until no page remains
+END_COMPUTATION
+
+COMPUTATION c4
+description: Apply the requested change to each gathered record
 argument records = @i2
 END_COMPUTATION
 
-COMPUTATION c3
-description: Confirm that every requested change took effect
-
-END_COMPUTATION
-
-EDGE i1 REQUIRES c1
-EDGE c1 PRODUCES i2
-EDGE i2 REQUIRES c2
+EDGE c1 REFINES c2
+EDGE c1 REFINES c3
+EDGE i1 INTERFACE_INPUT c1
+EDGE c1 INTERFACE_OUTPUT i2
+EDGE i1 REQUIRES c2
+EDGE c3 PRODUCES i2
+EDGE i2 REQUIRES c4
 EDGE c2 PRECEDES c3
+EDGE c1 PRECEDES c4
 
 END_GRAPH
 ```
 
-`c1` and `c2` are ordered by `i2` passing between them, so no `PRECEDES` edge says it again. `c2` and
-`c3` are ordered by nothing else, so that ordering is written down.
+`c1` is coarse: it has been refined into `c2` and `c3`, so it carries no operation and no `REQUIRES`
+or `PRODUCES` edge of its own. It declares that it needs `i1` and will establish `i2`, and the same
+two nodes appear below it — `i1` is required by `c2`, and `i2` is produced by `c3`. `c4` is ordered
+after the whole of `c1`, which is why that `PRECEDES` edge is written at the coarse level.
