@@ -240,6 +240,57 @@ def test_resuming_refuses_a_duplicate(tmp_path):
         A.resume(labels, header_for(), chains)
 
 
+def test_resuming_refuses_a_different_annotator(tmp_path):
+    """Otherwise a second person continues the file and it all reads as one annotator's work."""
+    chains, _ = chain_of(3)
+    labels = write_labels(tmp_path, header_for(annotator_id="annotator_A"), [record("p1")])
+    with pytest.raises(A.SessionError, match="belongs to 'annotator_A'"):
+        A.resume(labels, header_for(annotator_id="annotator_B"), chains)
+
+
+def test_resuming_refuses_a_different_attestation(tmp_path):
+    chains, _ = chain_of(3)
+    labels = write_labels(tmp_path,
+                          header_for(independence_attestation="I looked at everything"),
+                          [record("p1")])
+    with pytest.raises(A.SessionError, match="different attestation"):
+        A.resume(labels, header_for(), chains)
+
+
+def test_resuming_keeps_the_original_times_and_does_not_restate_them(tmp_path):
+    chains, _ = chain_of(3)
+    labels = write_labels(tmp_path, header_for(started_at="first", attested_at="then"),
+                          [record("p1")])
+    header = header_for(started_at="now", attested_at="now")
+    A.resume(labels, header, chains)
+    assert header["started_at"] == "first" and header["attested_at"] == "then"
+
+
+# --------------------------------------------------------------------------- subtype input
+
+@pytest.mark.parametrize("text,expected", [
+    ("1", ["new_prerequisite"]),
+    ("2", ["path_or_branch_invalidated"]),
+    (" 1 , 3 ", ["new_prerequisite", "goal_or_constraint_revised"]),
+    ("3,2,1", ["goal_or_constraint_revised", "path_or_branch_invalidated",
+               "new_prerequisite"]),
+])
+def test_a_wholly_valid_choice_is_accepted(text, expected):
+    assert A.parse_subtypes(text) == expected
+
+
+@pytest.mark.parametrize("text", ["1,4", "4", "1,x", "0", "", " ", "1,", ",1", "1,,2", "1 2"])
+def test_a_choice_with_anything_unrecognised_is_refused_whole(text):
+    """Keeping the parts it understood would turn 1,4 into 1 and write that irreversibly."""
+    with pytest.raises(A.SessionError):
+        A.parse_subtypes(text)
+
+
+def test_a_repeated_choice_is_refused():
+    with pytest.raises(A.SessionError, match="repeated"):
+        A.parse_subtypes("1,1")
+
+
 def test_resuming_refuses_a_record_that_breaks_the_schema(tmp_path):
     chains, _ = chain_of(3)
     labels = write_labels(tmp_path, header_for(),

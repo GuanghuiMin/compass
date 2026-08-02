@@ -224,6 +224,14 @@ def resume(labels: Path, header: dict, chains: dict[str, list[str]]) -> list[str
                   "chain_index_sha256", "viewer_commit"):
         if existing.get(field) != header[field]:
             raise SessionError(f"{labels} was written against a different {field}")
+    # Whose file this is, checked rather than adopted. Taking the identifier from the file would
+    # let a second person continue it and leave the whole thing looking like one annotator's work.
+    if existing.get("annotator_id") != header["annotator_id"]:
+        raise SessionError(f"{labels} belongs to {existing.get('annotator_id')!r}, "
+                           f"not {header['annotator_id']!r}")
+    if existing.get("independence_attestation") != ATTESTATION:
+        raise SessionError(f"{labels} carries a different attestation")
+
     records = [validate_record(json.loads(line)) for line in lines[1:]]
     done = [r["packet_id"] for r in records]
     if len(set(done)) != len(done):
@@ -231,8 +239,9 @@ def resume(labels: Path, header: dict, chains: dict[str, list[str]]) -> list[str
     expected = [p for _, ordered in sorted(chains.items()) for p in ordered]
     if done != expected[:len(done)]:
         raise SessionError("the labels are not a prefix of the chain order")
+    # The original times stand: the attestation was made once, and the session began once.
     header["started_at"] = existing["started_at"]
-    header["annotator_id"] = existing["annotator_id"]
+    header["attested_at"] = existing["attested_at"]
     return done
 
 
@@ -267,6 +276,22 @@ def ask(prompt: str, allowed: tuple[str, ...]) -> str:
         print(f"   one of: {', '.join(allowed)}")
 
 
+def parse_subtypes(text: str) -> list[str]:
+    """Every token must be a choice, or the whole input is refused.
+
+    Dropping the tokens it does not recognise would turn "1,4" into "1" and write that into a label
+    that cannot afterwards be corrected.
+    """
+    tokens = [t.strip() for t in text.split(",")]
+    if not tokens or any(not t for t in tokens):
+        raise SessionError("an empty choice")
+    if any(t not in ("1", "2", "3") for t in tokens):
+        raise SessionError(f"{[t for t in tokens if t not in ('1', '2', '3')]} is not a choice")
+    if len(set(tokens)) != len(tokens):
+        raise SessionError("a choice is repeated")
+    return [SUBTYPES[int(t) - 1] for t in tokens]
+
+
 def collect(packet_id: str) -> dict:
     print("\n  " + "  ".join(f"[{i}] {c}" for i, c in enumerate(CLASSES, 1)))
     event_class = CLASSES[int(ask("  class: ", tuple(str(i) for i in range(1, 6)))) - 1]
@@ -275,13 +300,11 @@ def collect(packet_id: str) -> dict:
     if event_class == "structural_revision":
         print("  " + "  ".join(f"[{i}] {s}" for i, s in enumerate(SUBTYPES, 1)))
         while True:
-            picked = input("  subtypes, comma separated: ").strip()
-            chosen = [SUBTYPES[int(x) - 1] for x in picked.split(",")
-                      if x.strip() in ("1", "2", "3")]
-            if chosen and len(set(chosen)) == len(chosen):
-                subtypes = list(dict.fromkeys(chosen))
+            try:
+                subtypes = parse_subtypes(input("  subtypes, comma separated: "))
                 break
-            print("   at least one, no repeats")
+            except SessionError as err:
+                print(f"   {err}; enter one or more of 1, 2, 3")
     if event_class == "terminal_transition":
         stage = STAGES[int(ask("  stage [1] ready [2] confirmed: ", ("1", "2"))) - 1]
     return validate_record({"packet_id": packet_id, "event_class": event_class,
