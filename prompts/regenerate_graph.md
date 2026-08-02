@@ -67,10 +67,22 @@ computations it breaks into and connect each with a `REFINES` edge running from 
 stops being a leaf the moment it has one. Refinement can go more than one level, and a child may
 itself be refined later.
 
-A refined computation has no operation, no arguments, and no `REQUIRES` or `PRODUCES` edges: the work
-belongs to its children now, and so does the dataflow. What it has instead is an interface. An
-abstract leaf has no interface and uses `REQUIRES` and `PRODUCES` like any other leaf, because it has
-no descendants for an interface to describe.
+A refined computation has no operation, no arguments and no `PRODUCES` edges. Its descendants do the
+executable work and establish the future results.
+
+It **may** directly `REQUIRE` established information that governs or constrains the refined
+obligation as a whole and is not naturally consumed by any one descendant — a route proved closed, a
+restriction on how the work may be done at all, a condition the whole obligation has to satisfy.
+Keep step-specific execution inputs on the leaves that use them: the exact argument, the token a call
+takes, the identifier a call is made against. And do not copy obligation-level knowledge onto every
+leaf merely to keep it in the graph; put it where its real consumer is.
+
+Where a piece of information belongs is decided by what actually consumes it, not by its kind. A
+`failure_consequence` that closes one leaf's route belongs to that leaf; a `constraint` that a
+particular call must respect belongs to that call.
+
+An abstract leaf has no interface and uses `REQUIRES` and `PRODUCES` like any other leaf, because it
+has no descendants for an interface to describe.
 
 # The refinement interface, which you mostly do not write
 

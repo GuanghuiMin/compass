@@ -130,8 +130,18 @@ def _is_visible(graph: StateGraph, computation_id: str, active: set[str]) -> boo
 
 def _coarse_block(graph: StateGraph, computation: ComputationNode,
                   seen: set[str]) -> list[str]:
-    """A refined computation: what it is for, and the interface across its boundary."""
+    """A refined computation: what it is for, what governs it, and its boundary.
+
+    The requirements come first and are not the interface. They are what the obligation itself
+    consumes -- a closed route, a restriction on how it may be done -- and leaving them out of the
+    handover would drop the one thing standing between the agent and a repeat of a failure, while
+    the graph went on holding it.
+    """
     lines = [f"[{computation.id}] {computation.description}"]
+    requires = graph.requires_of(computation.id)
+    if requires:
+        lines.append("Needs:")
+        lines += [f"- {_information_line(graph.node(i), seen)}" for i in requires]
     inputs = graph.interface_inputs_of(computation.id)
     if inputs:
         lines.append("Interface in:")

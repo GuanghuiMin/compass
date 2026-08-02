@@ -51,8 +51,7 @@ There is no field saying which. The edges say it, and a leaf is any computation 
 when its dependencies are met — because working out how to do something is work, and the way it gets
 worked out is that the next regeneration refines it.
 
-A refined computation carries no `operation` and no `arguments`. The work is its children's, and so is
-the dataflow: §3.1 gives it an interface instead.
+A refined computation carries no `operation` and no `arguments`. The work is its children's.
 
 ```python
 @dataclass(frozen=True)
@@ -150,6 +149,39 @@ available `CONTRACT` or `RUNTIME_REFERENCE` with the corresponding typed payload
 This settles a contradiction rather than tidying one. A runtime reference that is not available yet
 would otherwise say both "the agent bound this name" and "this does not exist yet". The transition is
 between snapshots, never a flip of availability on one node.
+
+---
+
+### 2.4 What a refined computation requires
+
+The graph says three different things, and the third is easy to lose:
+
+| | |
+| --- | --- |
+| what governs an obligation | information a refined computation `REQUIRES` directly |
+| how the obligation is broken down | `REFINES`, and the interface across the boundary (§3.1) |
+| what each step consumes and establishes | `REQUIRES` and `PRODUCES` at the leaves |
+
+A refined computation may require information directly, and this is **not** an interface input. An
+interface input is data some descendant leaf needs in order to run, and it is derived from the leaves.
+A direct requirement is knowledge the obligation itself consumes: a route established as closed, a
+restriction on how the work may be done at all, a condition the whole unit has to satisfy. It
+constrains how the obligation may be refined or replanned, and no single leaf consumes it.
+
+That distinction was learned from output rather than reasoned from taste. Told that a batch interface
+had been retired, the model wrote the consequence as a `failure_consequence` and attached it to the
+refined computation for the registration work — the only place it belongs, since it governs every way
+that obligation could be discharged and is an input to none of them. An earlier version of this
+specification treated a refined computation as nothing but a boundary and refused that graph, which
+made the model responsible for a layer the format had removed. Attaching such knowledge to one
+arbitrary leaf would misstate its scope; copying it onto all of them would let the format dictate the
+meaning; dropping it would delete the one thing standing between the agent and a repeated failure.
+
+Where a piece of information belongs is decided by what consumes it, never by its kind. A
+`failure_consequence` closing one leaf's route belongs to that leaf. Code never moves a requirement
+between levels, never copies one down, and never converts one into an interface input: which
+obligation a piece of knowledge constrains is a semantic judgement, and §14 keeps those out of the
+code.
 
 ---
 
@@ -299,9 +331,11 @@ whatever else was in the same graph.
 6. **No history.** No completed or invalidated computation is present.
 7. **No orphan structure.** No dangling edge, no duplicate id within a snapshot, no unknown relation.
 8. **One parent.** Every computation has at most one incoming `REFINES` edge.
-9. **Roles.** A refined computation carries no `operation`, no `arguments`, and no `REQUIRES` or
-   `PRODUCES` edge. A leaf carries no `INTERFACE_INPUT` or `INTERFACE_OUTPUT` edge, because an
-   interface with no descendants is realized by nothing.
+9. **Roles.** A refined computation carries no `operation`, no `arguments` and no `PRODUCES` edge:
+   it does not execute, so a result that does not exist yet is established by a descendant leaf, and
+   one a finished child already left behind is carried by an available `INTERFACE_OUTPUT` (§3.1). It
+   **may** carry `REQUIRES` (§2.4). A leaf carries no `INTERFACE_INPUT` or `INTERFACE_OUTPUT` edge,
+   because an interface with no descendants is realized by nothing.
 10. **Complete boundaries.** For a refined computation `p`, write `D(p)` for its refinement
     descendants and `L(p)` for its descendant leaves.
 

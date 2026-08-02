@@ -115,15 +115,48 @@ def test_a_coarse_computation_may_not_carry_arguments():
     assert "coarse_is_executable" in codes(g)
 
 
-@pytest.mark.parametrize("relation,source,target", [
-    (Relation.REQUIRES, "i1", "c1"),
-    (Relation.PRODUCES, "c1", "i1"),
-])
-def test_a_coarse_computation_may_not_use_operational_edges(relation, source, target):
+def test_a_coarse_computation_may_not_produce():
+    """It does not execute, so a result that does not exist yet comes from a descendant leaf."""
     g = build(nodes=[comp("c1"), comp("c2"), info("i1")],
-              edges=[("c1", Relation.REFINES, "c2"), (source, relation, target),
+              edges=[("c1", Relation.REFINES, "c2"), ("c1", Relation.PRODUCES, "i1"),
                      ("i1", Relation.REQUIRES, "c2")])
     assert "coarse_operational_edge" in codes(g)
+
+
+def test_a_coarse_computation_may_require_information_directly():
+    """Obligation-level knowledge: what governs the unit of work, not what a step consumes.
+
+    A route established as closed constrains how the whole obligation may be discharged. It is not
+    an input to any one leaf, and duplicating it onto every leaf to keep it alive would be the
+    format dictating the meaning.
+    """
+    g = build(nodes=[comp("c1", "Register every seedling"), comp("c2", "Open one entry"),
+                     info("i1", "the batch route was retired and no batch interface exists",
+                          kind=InformationKind.FAILURE_CONSEQUENCE)],
+              edges=[("c1", Relation.REFINES, "c2"), ("i1", Relation.REQUIRES, "c1")])
+    assert validate(g) == ()
+
+
+def test_a_direct_requirement_is_not_turned_into_an_interface_input():
+    """The two say different things, so one may not be quietly read as the other."""
+    from future_graph.interfaces import complete_interfaces, crossing_inputs
+    g = build(nodes=[comp("c1"), comp("c2"), info("i1", "what governs the obligation")],
+              edges=[("c1", Relation.REFINES, "c2"), ("i1", Relation.REQUIRES, "c1")])
+    assert crossing_inputs(g, "c1") == set()
+    completed, changes = complete_interfaces(g)
+    assert completed.interface_inputs_of("c1") == ()
+    assert changes == ()
+    assert completed.requires_of("c1") == ("i1",)
+
+
+def test_information_only_the_obligation_requires_survives_collection():
+    """The case this rule exists for: nothing else keeps the closed-route knowledge alive."""
+    from future_graph.lifecycle import collect_dead_information
+    g = build(nodes=[comp("c1"), comp("c2"), info("i1", "the batch route is gone",
+                                                  kind=InformationKind.FAILURE_CONSEQUENCE)],
+              edges=[("c1", Relation.REFINES, "c2"), ("i1", Relation.REQUIRES, "c1")])
+    assert collect_dead_information(g) == ()
+    assert [i.id for i in g.information] == ["i1"]
 
 
 @pytest.mark.parametrize("relation,source,target", [
@@ -352,7 +385,7 @@ def test_every_refinement_fault_is_reported_not_just_the_first():
               edges=[("c1", Relation.REFINES, "c3"), ("c2", Relation.REFINES, "c3"),
                      ("i1", Relation.INTERFACE_INPUT, "c1"),
                      ("c1", Relation.INTERFACE_OUTPUT, "i2"),
-                     ("i1", Relation.REQUIRES, "c1")])
+                     ("c1", Relation.PRODUCES, "i2")])
     assert set(codes(g)) >= {"multiple_refinement_parents", "coarse_is_executable",
                              "coarse_operational_edge", "unrealized_interface_input",
                              "unrealized_interface_output"}

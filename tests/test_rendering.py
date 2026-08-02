@@ -343,3 +343,21 @@ def test_a_coarse_computation_names_its_children():
 
 def test_refined_rendering_is_deterministic():
     assert render(refined()) == render(refined())
+
+
+def test_a_refined_computation_shows_what_governs_it():
+    """Obligation-level knowledge reaches the handover, or the graph holds it and nobody sees it."""
+    g = build(nodes=[comp("c1", "Register every seedling"),
+                     comp("c2", "Open one entry", operation="example.open_entry"),
+                     info("i1", "The batch route was retired and no batch interface exists",
+                          kind=InformationKind.FAILURE_CONSEQUENCE),
+                     info("i2", "The delivery to register")],
+              edges=[("c1", Relation.REFINES, "c2"),
+                     ("i1", Relation.REQUIRES, "c1"),
+                     ("i2", Relation.INTERFACE_INPUT, "c1"), ("i2", Relation.REQUIRES, "c2")])
+    text = render(g)
+    plan = text.split("ACTIVE WORK")[0]
+    assert "Needs:" in plan
+    assert "The batch route was retired" in plan
+    assert plan.index("Needs:") < plan.index("Interface in:")
+    assert "[i1|failure_consequence]" in plan

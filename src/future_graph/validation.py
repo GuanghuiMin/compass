@@ -142,10 +142,16 @@ def _refinement_parents(graph: StateGraph) -> list[Violation]:
 
 
 def _coarse_and_leaf_roles(graph: StateGraph) -> list[Violation]:
-    """A refined computation declares an interface; a leaf does the work.
+    """A refined computation is an obligation with a boundary; a leaf does the work.
 
-    Keeping the two kinds of edge apart is what stops a coarse node from quietly holding
-    execution state, and what stops a leaf from declaring an interface nothing realizes.
+    It may require information directly. That is not the same thing as an interface input, and the
+    difference is which question the information answers: an interface input is data some descendant
+    leaf needs to run, derived from the leaves; a direct requirement is knowledge that governs the
+    obligation itself -- a route established as closed, a restriction on how the work may be done --
+    which constrains the refinement rather than any one step inside it.
+
+    It may not produce, and it may not execute: it has no operation and no arguments, because the
+    work is its children's.
     """
     out: list[Violation] = []
     for computation in graph.computations:
@@ -158,13 +164,14 @@ def _coarse_and_leaf_roles(graph: StateGraph) -> list[Violation]:
                     "a refined computation carries an operation or arguments, but the work is "
                     "its children's",
                     (computation.id,)))
-            operational = graph.requires_of(computation.id) + graph.produces_of(computation.id)
-            if operational:
+            produced = graph.produces_of(computation.id)
+            if produced:
                 out.append(Violation(
                     "coarse_operational_edge",
-                    "a refined computation uses requires or produces; a coarse node states its "
-                    "interface and its leaves do the consuming and producing",
-                    (computation.id, *operational)))
+                    "a refined computation produces information, but it does not execute: a result "
+                    "that does not exist yet is established by a descendant leaf, and one a "
+                    "finished child already left behind is carried by an available interface output",
+                    (computation.id, *produced)))
         elif interface:
             out.append(Violation(
                 "leaf_interface_edge",

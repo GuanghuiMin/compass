@@ -195,3 +195,16 @@ def test_labels_are_local_and_need_not_be_numbers(prompt):
     assert says(prompt, "a label does not have to be a number")
     lowered = " ".join(prompt.lower().split())
     assert "number your computations and information from scratch" not in lowered
+
+
+def test_a_refined_computation_may_require_but_not_produce(prompt):
+    """The obligation layer: what governs a unit of work, distinct from what a step consumes."""
+    assert says(prompt, "no operation, no arguments and no `produces` edges")
+    assert says(prompt, "may** directly `require` established information that governs or "
+                        "constrains the refined obligation as a whole")
+    assert says(prompt, "keep step-specific execution inputs on the leaves")
+    assert says(prompt, "do not copy obligation-level knowledge onto every leaf")
+
+
+def test_placement_follows_the_consumer_and_not_the_kind(prompt):
+    assert says(prompt, "decided by what actually consumes it, not by its kind")
