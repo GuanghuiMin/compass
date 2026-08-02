@@ -198,11 +198,37 @@ match inferred from a name or a description. Identity is the whole mechanism, an
 token, one identifier or one confirmed interface exist once and be consumed by leaves in different
 branches.
 
-**The interface is complete, not optional.** It is not a set of annotations that must be realized if
-present; it is exactly the set of information that crosses the boundary, and §6 invariant 10 compares
-the two in both directions. A refinement that reaches outside itself without saying so is refused, and
-so is one that declares something which never crosses. Without that, declaring an interface would be a
-courtesy and the coupling this design exists for would not hold.
+**The interface is complete, not optional.** It is exactly the set of information that crosses the
+boundary, and §6 invariant 10 states it as two set equalities.
+
+**Most of it is the code's to write, not the model's.** Which information crosses is a function of the
+dataflow at the leaves, so the code derives it:
+
+| | |
+| --- | --- |
+| every `INTERFACE_INPUT` | derived |
+| every `INTERFACE_OUTPUT` naming information that is not available | derived |
+| an `INTERFACE_OUTPUT` naming information that is available | declared by the model |
+
+The last row is the one case the graph cannot answer for itself. An available information node is
+permitted to have no producer (§6 invariant 4), so a result a partly-finished refinement already
+delivered — its producing child having left the graph when it completed, §7 — has exactly the shape of
+a value established somewhere else that the refinement happens to use: available, no `PRODUCES` edge,
+consumed outside. Deriving it would mean either dropping the fact that the refinement delivered it, or
+claiming that every available value a refinement touches came from it. The first loses
+partial-completion provenance; the second manufactures it. So that edge stays with whoever read the
+trajectory, and is validated rather than generated.
+
+**Completion is not repair.** It removes the model's declarations of the derived relations — correct,
+redundant or reversed alike — and puts the derived set in their place, recording every edit (§12.7). A
+model-authored edge of a relation the model does not own is residue, and refusing a candidate over
+residue would go on holding the model responsible for a function that has been moved into code. What
+completion never does is invent a computation, an information node, a consumer or a producer; a graph
+that does not hold together afterwards is still refused.
+
+`interfaces.py` holds the one definition of what crosses a boundary, and both completion and
+validation call it. Two implementations of the same set would eventually disagree, and the
+disagreement would surface as a model error.
 
 ---
 
@@ -210,6 +236,23 @@ courtesy and the coupling this design exists for would not hold.
 
 **Node ids are local to one snapshot.** `c1, c2, c3` for computations, `i1, i2, i3` for information.
 They carry no meaning across a boundary and must never be interpreted across one.
+
+Because they carry no meaning, the model does not have to produce them. It writes **labels** —
+letters, digits and underscores, beginning with a letter or an underscore — and the parser renumbers
+them to canonical ids by order of declaration, rewriting every edge endpoint and every `@` argument
+reference with them, and recording each renaming as a normalization. A label is unique across both
+kinds, since `INFO token` beside `COMPUTATION token` would leave `@token` ambiguous before anything
+could be mapped.
+
+This is surface normalization, in the same sense as tolerating a markdown fence. It creates no node,
+edge, consumer, producer or argument. What stays refused is unchanged: a label declared twice, an edge
+or reference naming a label no block declares, and a computation used as an information reference —
+the last of these in the parser, which already knows the answer, rather than deferred to validation.
+
+The reason is worth stating, because it was learned from output rather than reasoned from taste. A
+model asked to refine a computation reaches for `c1a` and `c1b` to show that two computations belong
+to one parent — which is exactly what the `REFINES` edge already says. Losing an otherwise sound graph
+over the spelling of a name is the format punishing the structure it exists to carry.
 
 There is therefore no retired-id registry, no stable-identity rule, no cross-boundary reuse protocol
 and no similarity matching to decide whether two nodes are "the same computation". A regeneration is a
@@ -309,13 +352,19 @@ At a boundary:
 
 1. The previous graph stays untouched.
 2. The generator returns a complete candidate graph.
-3. The candidate is parsed; only surface syntax is normalized.
-4. The candidate is validated whole, collecting every violation.
-5. Dead information — no outgoing `REQUIRES` — is removed deterministically. Code removes it; code
+3. The candidate is parsed; only surface syntax is normalized, labels included (§4).
+4. The code-owned interface edges are completed (§3.1): the model's declarations of those relations
+   are removed and the derived set is put in their place, on a **new** graph, so a candidate that is
+   later refused was never altered on the way to being refused.
+5. The completed candidate is validated whole, collecting every violation.
+6. Dead information — no outgoing `REQUIRES` — is removed deterministically. Code removes it; code
    never infers who a consumer *should* have been.
-6. If valid, the candidate replaces the previous graph atomically.
-7. If not, the previous graph survives byte-identically and nothing is collected, deleted or merged.
-8. Raw output, parsed candidate, normalization log, verdicts and the resulting graph are all saved.
+7. If valid, the completed candidate replaces the previous graph atomically.
+8. If not, the previous graph survives byte-identically and nothing is collected, deleted or merged.
+9. Raw output, parsed candidate, normalization log, interface edits, verdicts and the resulting graph
+   are all saved.
+
+Completion precedes validation because the thing validated has to be the thing committed.
 
 A completed computation does not appear in the new graph. If its result is still needed, it appears as
 an available information node wired to the computations that consume it; if it is not needed, it and
@@ -632,14 +681,21 @@ sound graphs and pass unsound ones with equal confidence.
 
 ```text
 raw output
-  -> parse
+  -> parse                       surface, labels included
   -> snapshot the parsed candidate, before anything mutates it
   -> replace(previous, candidate)
+       -> complete the code-owned interfaces, onto a new graph
+       -> validate
+       -> collect
   -> render the accepted graph
 ```
 
-Validation happens once, inside `replace`. Its violations are the validation result; nothing validates
-beforehand and then hands a graph on as already checked.
+Validation happens once, inside `replace`, on the completed graph. Its violations are the validation
+result; nothing validates beforehand and then hands a graph on as already checked.
+
+The candidate snapshot is taken **before** completion as well as before collection, so the record
+distinguishes three things that are easy to conflate: what the model wrote, what the code added or
+removed, and what was committed.
 
 The candidate is snapshotted **before** replacement, because replacement collects dead information from
 it in place. What the model produced and what was committed are two different things, and an audit that
@@ -670,8 +726,18 @@ record describes but the adapter never received would make every measurement unf
 Each boundary records: the exact system and user messages and configuration; a hash of the system
 message as sent; the four inputs separately, so the assembly can be checked; the raw output; the
 parser's normalizations and errors; the parsed candidate snapshot when parsing succeeded; the
-validation violations; the verdict; the resulting snapshot; the collected information ids; and the
-rendered handover.
+interface edits; the validation violations; the verdict; the resulting snapshot; the collected
+information ids; and the rendered handover.
+
+`interface_changes` holds every code-owned edge taken out of the candidate or put into it, as an
+action, a source, a relation and a target, in canonical ids and a deterministic order, and is empty
+when nothing moved. Removals are recorded as well as additions: without them the record would show a
+graph gaining edges and never show one losing them, and a declaration the code discarded would be
+invisible. An edge the model wrote that the derivation also produces is not reported, because it was
+removed and put back identically and listing it would bury the real edits.
+
+Interface completion is **not** a parser normalization and is not recorded as one. Normalizations are
+tolerated surface; this is a change to the graph.
 
 ---
 

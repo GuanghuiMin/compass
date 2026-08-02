@@ -13,6 +13,12 @@ Return the whole graph every time. Not a change to the previous one, not a list 
 that differ. The previous graph is evidence about what remains; what you write replaces it entirely,
 and anything you leave out is gone.
 
+You write the meaning: the computations, the information, which computation is refined into which,
+and what each leaf requires and produces. The system then completes the refinement interfaces from
+that dataflow, checks the whole thing, and commits it. So the committed graph holds a few edges you
+did not write, and the previous graph you are shown holds them too. Section by section below says
+which those are.
+
 # What the graph is made of
 
 **Computations** are meaningful pieces of remaining work: "obtain a usable access token", "verify that
@@ -66,30 +72,33 @@ belongs to its children now, and so does the dataflow. What it has instead is an
 abstract leaf has no interface and uses `REQUIRES` and `PRODUCES` like any other leaf, because it has
 no descendants for an interface to describe.
 
-# The interface is the whole boundary
+# The refinement interface, which you mostly do not write
 
-A refined computation's interface is **exactly** the information that crosses its boundary. Not the
-part that seemed worth mentioning: all of it, and nothing else.
+A refined computation's interface is exactly the information that crosses its boundary — and that is
+a function of the dataflow you already wrote at the leaves, so the system works it out and adds the
+edges itself.
 
-Information crosses **in** when a leaf inside the refinement requires it and nothing inside the
-refinement produces it. Declare every one of those with `INTERFACE_INPUT`, and declare nothing else —
-something the refinement both produces and consumes internally stays internal.
+**Do not write `INTERFACE_INPUT` edges.**
+**Do not write `INTERFACE_OUTPUT` edges for information that is not available yet.**
 
-Information crosses **out** when a leaf inside the refinement produces it and something outside
-consumes it. Declare every one of those with `INTERFACE_OUTPUT`, and declare nothing else — a result
-that only the refinement's own leaves consume stays internal, and so does one that nothing consumes
-at all.
+The system derives both from leaf-level `REQUIRES` and `PRODUCES`: what a leaf inside the refinement
+needs and nothing inside produces crosses in; what a leaf inside produces and something outside
+consumes crosses out. `PREVIOUS_GRAPH` will show you those edges, because by then they exist. They
+are not yours to copy forward. Write the leaf dataflow and let them be derived again.
 
-An interface output that is **already available** has no producer inside, because whatever
-established it has left the graph; something outside must still consume it, or it does not belong on
-the interface either.
+**Write an `INTERFACE_OUTPUT` in exactly one case**: the information is already available, the
+refined computation established it earlier, and the child that produced it has since left the graph
+because it finished. Nothing in the structure can tell that apart from a value established somewhere
+else that the refinement happens to use — an available node has no producer either way — so it is
+the one part of the interface only you can state, and you state it by writing the edge.
 
-**It is the same information node on both sides.** The same `i` id, not a second node describing the
-same thing. This is what lets one token, one identifier or one confirmed interface exist once and be
-used by leaves in different branches: one node, several `REQUIRES` edges.
+**It is the same information node on both sides.** Not a second node describing the same thing. This
+is what lets one token, one identifier or one confirmed interface exist once and be used by leaves in
+different branches: one node, several `REQUIRES` edges.
 
-Each boundary is judged on its own. Information that one child establishes and another child consumes
-crosses both of those boundaries, and is not on the interface of the parent they share.
+Each boundary is worked out on its own. Information that one child establishes and another child
+consumes crosses both of those boundaries and not the boundary of the parent they share — which is
+another reason not to write these by hand.
 
 **A refinement that turned out to be wrong is replaced, not annotated.** If the slice shows that the
 way you had broken something down cannot work, write different children. The old ones are simply not
@@ -113,9 +122,12 @@ and exactly one computation must produce it.
 describing what will be established; it becomes a contract or a runtime reference in a later graph,
 once it exists. Anything not yet available carries no payload, because there is nothing yet to carry.
 
-Ids are local to the graph you are writing now. `c1` in the previous graph and `c1` in yours are not
-the same thing by virtue of the name, and you are not preserving identities. Number your computations
-and information from scratch, in whatever order suits the graph you are writing.
+Labels are local to the graph you are writing now. `c1` in the previous graph and `c1` in yours are
+not the same thing by virtue of the name, and you are not preserving identities. Write whatever label
+reads clearly — `c1`, `open_entries`, `token` — using letters, digits and underscores. They are
+renumbered when the graph is read, so a label does not have to be a number and does not have to match
+anything in the previous graph. Declare each one once, and do not give an information node and a
+computation the same label.
 
 Never invent an interface, a bound name, an identifier or a value. Write only what the goal, the rules,
 or the slice you were given establish.
@@ -327,8 +339,6 @@ END_COMPUTATION
 
 EDGE c1 REFINES c2
 EDGE c1 REFINES c3
-EDGE i1 INTERFACE_INPUT c1
-EDGE c1 INTERFACE_OUTPUT i2
 EDGE i1 REQUIRES c2
 EDGE c3 PRODUCES i2
 EDGE i2 REQUIRES c4
@@ -338,8 +348,9 @@ EDGE c1 PRECEDES c4
 END_GRAPH
 ```
 
-`c1` is refined into `c2` and `c3`, so it carries no operation and no `REQUIRES`
-or `PRODUCES` edge of its own. It declares that it needs `i1` and will establish `i2`, and the same
-two nodes appear below it — `i1` is required by `c2`, and `i2` is produced by `c3`. `c4` is ordered
-after the whole of `c1`, which is why that `PRECEDES` edge is written on `c1` itself. `c3` is an
-abstract leaf: no children and no operation, and it is still a leaf.
+`c1` is refined into `c2` and `c3`, so it carries no operation and no `REQUIRES` or `PRODUCES` edge of
+its own. Note what is **not** written: `c1` needs `i1` from outside and will establish `i2` for `c4`,
+and neither interface edge appears here, because both follow from `i1 REQUIRES c2` and
+`c3 PRODUCES i2` and the system adds them. `c4` is ordered after the whole of `c1`, which is why that
+`PRECEDES` edge is written on `c1` itself. `c3` is an abstract leaf: no children and no operation, and
+it is still a leaf.

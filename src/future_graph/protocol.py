@@ -113,8 +113,14 @@ def _argument_out(value) -> str:
 
 
 GRAMMAR = f"""\
-Structural words and field names are case-insensitive. Ids, argument names, operations, runtime names,
-descriptions and payload text keep the case they were written in.
+Structural words and field names are case-insensitive. Labels, argument names, operations, runtime
+names, descriptions and payload text keep the case they were written in.
+
+A label names a node inside this one graph. Write whatever reads clearly -- `c1`, `open_entries`,
+`token` -- using letters, digits and underscores and starting with a letter or an underscore. Labels
+are renumbered to `c1, c2, ...` and `i1, i2, ...` when the graph is read, so they need not be
+numbers and need not match the previous graph. Each label is declared once, and no label may name
+both an information node and a computation.
 
 Every field below is given at most once, except `item`, `entry`, `contract-parameter`,
 `contract-constraint` and `argument`, which may repeat. A repeated `entry` key or `argument` name is an
@@ -122,7 +128,7 @@ error rather than the later value winning.
 
 {BEGIN_GRAPH}
 
-{BEGIN_INFO} <i-id>
+{BEGIN_INFO} <label>
 kind: {' | '.join(k.value for k in InformationKind)}
 available: true | false
 description: <text>
@@ -144,10 +150,10 @@ description: <text>
   contract and runtime_reference are available-only, and nothing unavailable carries a payload.
 {END_INFO}
 
-{BEGIN_COMPUTATION} <c-id>
+{BEGIN_COMPUTATION} <label>
 description: <text>
 operation: <function>              (optional)
-argument <name> = <scalar or @i-id>   (repeat, optional)
+argument <name> = <scalar or @label>  (repeat, optional)
 {END_COMPUTATION}
 
 {EDGE} <source> {' | '.join(r.name for r in Relation)} <target>

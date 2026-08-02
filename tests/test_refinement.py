@@ -361,14 +361,22 @@ def test_every_refinement_fault_is_reported_not_just_the_first():
 # --------------------------------------------------------------------------- atomicity
 
 def test_a_candidate_refused_for_a_refinement_fault_changes_nothing():
+    """The fault has to be one the model still owns.
+
+    An unrealized INTERFACE_INPUT is no longer a refusal: that relation belongs to the code, which
+    removes the declaration and derives the real set. So this uses an available interface output
+    that no computation outside the refinement consumes -- a provenance claim only the model can
+    make, and one this graph does not support.
+    """
     from future_graph.lifecycle import replace
     previous = refined()
     before = previous.to_snapshot()
-    candidate = build(nodes=[comp("c1"), comp("c2"), info("i1")],
+    candidate = build(nodes=[comp("c1"), comp("c2"), info("i1", "an established result")],
                       edges=[("c1", Relation.REFINES, "c2"),
-                             ("i1", Relation.INTERFACE_INPUT, "c1")])
+                             ("c1", Relation.INTERFACE_OUTPUT, "i1")])
     result = replace(previous, candidate)
     assert result.rejected and result.graph is previous
+    assert [v.code for v in result.violations] == ["internal_information_declared_as_output"]
     assert previous.to_snapshot() == before
     assert result.collected == ()
 

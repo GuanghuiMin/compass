@@ -71,11 +71,20 @@ def test_nothing_is_collected_on_the_grounds_that_it_used_to_matter():
 # --------------------------------------------------------------------------- replacement
 
 def test_a_sound_candidate_becomes_the_state():
+    """Equal to the candidate, and no longer the same object.
+
+    Interface completion returns a new graph rather than editing the one it was handed, so a
+    candidate that is later refused cannot have been altered on the way to being refused.
+    """
     previous, candidate = sound(), build(
         nodes=[comp("c1", description="Execute the remaining payments"), info("i1")],
         edges=[("i1", Relation.REQUIRES, "c1")])
+    before = candidate.to_snapshot()
     result = replace(previous, candidate)
-    assert result.accepted and result.graph is candidate
+    assert result.accepted
+    assert result.graph == candidate and result.graph is not candidate
+    assert candidate.to_snapshot() == before
+    assert result.interface_changes == ()          # nothing to complete: no refinement here
 
 
 def test_a_candidate_with_a_fault_leaves_the_previous_graph_identical():

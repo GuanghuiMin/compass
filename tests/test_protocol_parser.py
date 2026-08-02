@@ -217,7 +217,13 @@ def test_ids_that_read_as_the_same_number_serialize_in_one_order():
     b.add(ComputationNode(id="c01", description="second"))
     b.add(ComputationNode(id="c1", description="first"))
     assert to_protocol(a) == to_protocol(b)
-    assert parse(to_protocol(a)).graph == a
+    # Reading it back canonicalizes. The serialization writes `c01` before `c1` -- they read as the
+    # same number, so the raw label breaks the tie -- and the labels are then renumbered in that
+    # order, which is why "second" comes back as c1. What survives a round trip is the graph, not
+    # the spelling of its labels.
+    back = parse(to_protocol(a)).graph
+    assert [c.id for c in back.computations] == ["c1", "c2"]
+    assert [c.description for c in back.computations] == ["second", "first"]
 
 
 def test_optional_quotes_are_tolerated_and_logged():
@@ -252,19 +258,39 @@ def test_scalars_read_as_written(written, expected):
 
 
 def test_an_at_reference_is_a_reference_and_a_quoted_one_is_text():
+    """The `@` decides, and it is resolved through the label map; the quoted form is untouched."""
     text = ("BEGIN_GRAPH\nINFO i3\nkind: fact\navailable: true\ndescription: d\nEND_INFO\n"
             "COMPUTATION c1\ndescription: d\nargument a = @i3\nargument b = \"@i3\"\n"
             "END_COMPUTATION\nEDGE i3 REQUIRES c1\nEND_GRAPH\n")
     arguments = parse(text).graph.node("c1").arguments
-    assert arguments["a"] == InformationReference("i3")
-    assert arguments["b"] == "@i3"
+    assert arguments["a"] == InformationReference("i1")     # the only information block
+    assert arguments["b"] == "@i3"                          # a scalar, and never canonicalized
 
 
-def test_an_at_reference_to_an_absent_node_is_still_a_reference():
-    """Whether i9 exists is validation's question, not a hint about what was meant."""
+def test_a_quoted_reference_to_an_absent_label_is_still_just_text():
+    """Quoting decides text-ness on its own, with no lookup involved."""
+    text = ("BEGIN_GRAPH\nCOMPUTATION c1\ndescription: d\nargument a = \"@nowhere\"\n"
+            "END_COMPUTATION\nEND_GRAPH\n")
+    assert parse(text).graph.node("c1").arguments["a"] == "@nowhere"
+
+
+def test_an_at_reference_to_an_absent_label_is_refused_here():
+    """Moved deliberately from validation to the parser: canonicalization has to resolve the
+    label, so the parser already knows it names nothing and says so where it found out."""
     text = ("BEGIN_GRAPH\nCOMPUTATION c1\ndescription: d\nargument a = @i9\n"
             "END_COMPUTATION\nEND_GRAPH\n")
-    assert parse(text).graph.node("c1").arguments["a"] == InformationReference("i9")
+    outcome = parse(text)
+    assert outcome.graph is None
+    assert "which no block declares" in " ".join(e.message for e in outcome.errors)
+
+
+def test_a_computation_may_not_be_used_as_an_information_reference():
+    text = ("BEGIN_GRAPH\nCOMPUTATION open_entries\ndescription: d\nEND_COMPUTATION\n"
+            "COMPUTATION c2\ndescription: d\nargument a = @open_entries\nEND_COMPUTATION\n"
+            "END_GRAPH\n")
+    outcome = parse(text)
+    assert outcome.graph is None
+    assert "names a computation" in " ".join(e.message for e in outcome.errors)
 
 
 # --------------------------------------------------------------------------- refusals
@@ -350,11 +376,30 @@ def test_a_stringified_container_is_rejected_by_the_schema_through_the_parser():
     assert "stringified container" in messages(text)
 
 
-def test_an_id_of_the_wrong_shape_is_rejected():
-    assert "c<number>" in messages(WHOLE.replace("COMPUTATION c1", "COMPUTATION node_one")
-                                        .replace("EDGE i1 REQUIRES c1", "EDGE i1 REQUIRES node_one")
-                                        .replace("EDGE c1 PRODUCES i2", "EDGE node_one PRODUCES i2")
-                                        .replace("EDGE c1 PRECEDES c2", "EDGE node_one PRECEDES c2"))
+def test_a_descriptive_label_is_accepted_and_canonicalized():
+    """`node_one` used to be refused for its shape. A label is local and carries no meaning, so
+    the parser renames it rather than losing the graph over a name."""
+    outcome = parse(WHOLE.replace("COMPUTATION c1", "COMPUTATION node_one")
+                         .replace("EDGE i1 REQUIRES c1", "EDGE i1 REQUIRES node_one")
+                         .replace("EDGE c1 PRODUCES i2", "EDGE node_one PRODUCES i2")
+                         .replace("EDGE c1 PRECEDES c2", "EDGE node_one PRECEDES c2"))
+    assert outcome.errors == ()
+    assert [c.id for c in outcome.graph.computations] == ["c1", "c2"]
+    assert "node_one -> c1" in " ".join(outcome.normalizations)
+
+
+@pytest.mark.parametrize("label", ["9lives", "a-b", "with space", "@ref", "c1!"])
+def test_a_label_that_is_not_a_label_is_rejected(label):
+    text = (f"BEGIN_GRAPH\nCOMPUTATION {label}\ndescription: d\nEND_COMPUTATION\nEND_GRAPH\n")
+    outcome = parse(text)
+    assert outcome.graph is None and outcome.errors
+
+
+def test_the_same_label_in_both_kinds_is_refused():
+    """`@token` and `EDGE token ...` would be ambiguous before anything could be mapped."""
+    text = ("BEGIN_GRAPH\nINFO token\nkind: fact\navailable: true\ndescription: d\nEND_INFO\n"
+            "COMPUTATION token\ndescription: d\nEND_COMPUTATION\nEND_GRAPH\n")
+    assert "declared twice" in messages(text)
 
 
 # --------------------------------------------------------------------------- error policy
@@ -412,11 +457,15 @@ def test_errors_carry_a_line_number():
 
 @pytest.mark.parametrize("written", ["@", "@i", "@iX", "@c1", "@ i3", "@i3x", "@1"])
 def test_a_malformed_reference_is_an_error_and_never_an_exception(written):
+    """The refusals stay; only where they are reported moved. `@c1` names the computation this
+    block is, and the rest name nothing at all -- either way no graph and no exception."""
     text = ("BEGIN_GRAPH\nCOMPUTATION c1\ndescription: d\nargument a = " + written +
             "\nEND_COMPUTATION\nEND_GRAPH\n")
     outcome = parse(text)          # must not raise
     assert outcome.graph is None and outcome.errors
-    assert "is not a reference" in " ".join(e.message for e in outcome.errors)
+    reported = " ".join(e.message for e in outcome.errors)
+    assert any(phrase in reported for phrase in
+               ("no block declares", "names a computation", "is not a reference"))
 
 
 def test_both_a_bad_kind_and_a_bad_available_in_one_block_are_reported():
@@ -563,3 +612,92 @@ def test_the_parser_adds_no_edges_of_its_own():
             "COMPUTATION c1\ndescription: d\nargument a = @i1\nEND_COMPUTATION\nEND_GRAPH\n")
     g = parse(text).graph
     assert g.requires_of("c1") == ()
+
+
+# --------------------------------------------------------------------------- label canonicalization
+#
+# A label names a node inside one snapshot and nothing else: it is not stable across a boundary and
+# it carries no structure. A model reaching for `c1a` and `c1b` to show that two computations belong
+# together is saying something the REFINES edge already says, so the parser renames rather than
+# refusing a graph over the spelling of a name. Everything that was a refusal about *meaning* stays
+# a refusal.
+
+HIERARCHICAL = """\
+BEGIN_GRAPH
+
+INFO seedlings
+kind: fact
+available: true
+description: the twelve seedlings
+END_INFO
+
+COMPUTATION c1
+description: Register every seedling
+END_COMPUTATION
+
+COMPUTATION c1a
+description: Open an entry for each
+operation: example.open_entry
+argument records = @seedlings
+END_COMPUTATION
+
+COMPUTATION c1b
+description: Set each entry's status
+END_COMPUTATION
+
+EDGE c1 REFINES c1a
+EDGE c1 REFINES c1b
+EDGE seedlings REQUIRES c1a
+EDGE c1a PRECEDES c1b
+
+END_GRAPH
+"""
+
+
+def test_hierarchical_labels_are_canonicalized_by_first_appearance():
+    outcome = parse(HIERARCHICAL)
+    assert outcome.errors == ()
+    graph = outcome.graph
+    assert [c.id for c in graph.computations] == ["c1", "c2", "c3"]
+    assert graph.node("c2").description == "Open an entry for each"
+    assert [i.id for i in graph.information] == ["i1"]
+
+
+def test_edges_and_references_are_rewritten_through_the_same_map():
+    graph = parse(HIERARCHICAL).graph
+    assert graph.refinement_children_of("c1") == ("c2", "c3")
+    assert graph.requires_of("c2") == ("i1",)
+    assert graph.successors_of("c2") == ("c3",)
+    assert graph.node("c2").arguments["records"] == InformationReference("i1")
+
+
+def test_every_renamed_label_is_recorded_as_a_normalization():
+    reported = " ".join(parse(HIERARCHICAL).normalizations)
+    for mapping in ("c1a -> c2", "c1b -> c3", "seedlings -> i1"):
+        assert mapping in reported
+    assert "c1 -> c1" not in reported          # unchanged labels are not noise
+
+
+def test_descriptive_labels_work_the_same_way():
+    text = ("BEGIN_GRAPH\n"
+            "INFO listing_contract\nkind: fact\navailable: true\ndescription: d\nEND_INFO\n"
+            "COMPUTATION open_entries\ndescription: d\nargument a = @listing_contract\n"
+            "END_COMPUTATION\n"
+            "EDGE listing_contract REQUIRES open_entries\nEND_GRAPH\n")
+    graph = parse(text).graph
+    assert [c.id for c in graph.computations] == ["c1"]
+    assert graph.node("c1").arguments["a"] == InformationReference("i1")
+
+
+def test_a_duplicate_raw_label_is_refused():
+    text = ("BEGIN_GRAPH\nCOMPUTATION twice\ndescription: one\nEND_COMPUTATION\n"
+            "COMPUTATION twice\ndescription: two\nEND_COMPUTATION\nEND_GRAPH\n")
+    assert "declared twice" in messages(text)
+
+
+def test_canonicalization_invents_nothing():
+    """Renaming is the whole of it: the node, edge and argument counts are what was written."""
+    graph = parse(HIERARCHICAL).graph
+    assert len(graph.computations) == 3 and len(graph.information) == 1
+    assert len(graph.edges) == 4
+    assert len(graph.node("c2").arguments) == 1

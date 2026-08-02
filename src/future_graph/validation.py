@@ -25,6 +25,7 @@ from dataclasses import dataclass
 
 import networkx as nx
 
+from .interfaces import crossing_inputs, crossing_unavailable_outputs, refinement_region
 from .schema import ENDPOINTS, EntityType, InformationReference, Relation
 from .state_graph import StateGraph
 
@@ -194,20 +195,25 @@ def _interface_realization(graph: StateGraph) -> list[Violation]:
     for computation in graph.computations:
         if not graph.is_coarse(computation.id):
             continue
-        inside = set(graph.refinement_descendants_of(computation.id))
-        leaves = graph.descendant_leaves_of(computation.id)
-        produced_inside = {i for c in inside for i in graph.produces_of(c)}
+        inside, leaves = refinement_region(graph, computation.id)
         required_inside = {i for leaf in leaves for i in graph.requires_of(leaf)}
-        out += _crossing_inputs(graph, computation.id, known, required_inside, produced_inside)
+        out += _crossing_inputs(graph, computation.id, known, required_inside)
         out += _crossing_outputs(graph, computation.id, known, inside, leaves)
     return out
 
 
 def _crossing_inputs(graph: StateGraph, coarse_id: str, known: set[str],
-                     required_inside: set[str], produced_inside: set[str]) -> list[Violation]:
-    """Information the refined work needs and does not establish for itself."""
+                     required_inside: set[str]) -> list[Violation]:
+    """Information the refined work needs and does not establish for itself.
+
+    The set comes from `interfaces.crossing_inputs`, the same function completion uses. Under the
+    ownership split these edges are code-generated, so on a completed candidate the two sides agree
+    by construction and nothing here fires. It is kept because `validate` is also called directly,
+    on hand-built graphs and on graphs loaded from a snapshot, and because a completion bug should
+    be caught by the invariant rather than by whatever reads the graph next.
+    """
     declared = {i for i in graph.interface_inputs_of(coarse_id) if i in known}
-    crossing = {i for i in required_inside if i not in produced_inside} & known
+    crossing = crossing_inputs(graph, coarse_id)
 
     out: list[Violation] = []
     for information_id in sorted(crossing - declared):
@@ -270,15 +276,12 @@ def _crossing_outputs(graph: StateGraph, coarse_id: str, known: set[str],
                 "the refinement consumes, so it does not cross the boundary",
                 (coarse_id, information_id)))
 
-    for information_id in sorted({i for leaf in leaves for i in graph.produces_of(leaf)} & known):
-        if information_id in declared or graph.node(information_id).available:
-            continue
-        if len(producers_of(information_id)) == 1 and consumers_outside(information_id):
-            out.append(Violation(
-                "undeclared_interface_output",
-                "a leaf inside this refinement establishes information consumed outside it, and "
-                "the coarse computation does not declare it as an interface output",
-                (coarse_id, information_id)))
+    for information_id in sorted(crossing_unavailable_outputs(graph, coarse_id) - set(declared)):
+        out.append(Violation(
+            "undeclared_interface_output",
+            "a leaf inside this refinement establishes information consumed outside it, and "
+            "the coarse computation does not declare it as an interface output",
+            (coarse_id, information_id)))
     return out
 
 

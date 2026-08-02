@@ -15,6 +15,7 @@ validation.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from .protocol import (
@@ -230,6 +231,9 @@ def _read_blocks(lines: list[tuple[int, str]], reader: _Reader) -> None:
         reader.fail(0, f"no {END_GRAPH}")
 
 
+LABEL = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
 def _open_block(head: str, text: str, number: int, reader: _Reader) -> _Block:
     kind = "info" if head == BEGIN_INFO else "computation"
     parts = text.split()
@@ -237,7 +241,12 @@ def _open_block(head: str, text: str, number: int, reader: _Reader) -> _Block:
         # Keep reading its fields so their faults are seen too, but do not build a node from a
         # header that was never understood.
         return _Block(kind, parts[1] if len(parts) > 1 else "?", number, usable=False)
-    return _Block(kind, parts[1], number)
+    label = parts[1]
+    if not LABEL.fullmatch(label):
+        reader.fail(number, f"{label!r} is not a label: letters, digits and underscores, "
+                            "beginning with a letter or an underscore")
+        return _Block(kind, label, number, usable=False)
+    return _Block(kind, label, number)
 
 
 def _read_edge(text: str, number: int, reader: _Reader) -> None:
@@ -338,21 +347,31 @@ def _scalar(raw: str, reader: _Reader, line: int):
     return raw
 
 
-def _argument_value(raw: str, reader: _Reader, line: int):
-    """`@i3` is a reference; `"@i3"` is the text. Whether i3 exists never decides which.
+def _argument_value(raw: str, mapping: dict[str, str], kind_of: dict[str, str],
+                    reader: _Reader, line: int):
+    """`@token` is a reference; `"@token"` is the text. Whether token exists never decides which.
 
-    A reference whose name is not shaped like an information id is a parse error. No text a model can
-    write may escape as an exception from this module.
+    The label is resolved here, against the declarations, rather than turned into a reference and
+    checked later: the parser already knows whether `@token` named an information node or a
+    computation, and deferring a type error it can see to graph validation would report it in the
+    wrong place.
     """
     if raw.startswith("@"):
         name = raw[1:]
         if name != name.strip():
-            # The id check strips, so `@ i3` would quietly become a reference to i3. Whitespace
-            # inside a reference is not on the list of tolerated surface.
-            reader.fail(line, f"{raw!r} is not a reference: an id carries no spaces")
+            # Whitespace inside a reference is not on the list of tolerated surface: `@ token`
+            # would otherwise quietly become a reference to token.
+            reader.fail(line, f"{raw!r} is not a reference: a label carries no spaces")
+            return _FAILED
+        if name not in mapping:
+            reader.fail(line, f"{raw!r} names {name!r}, which no block declares")
+            return _FAILED
+        if kind_of[name] != "info":
+            reader.fail(line, f"{raw!r} names a computation, and an argument reference names "
+                              "an information node")
             return _FAILED
         try:
-            return InformationReference(name)
+            return InformationReference(mapping[name])
         except SchemaError as err:
             reader.fail(line, f"{raw!r} is not a reference: {err}")
             return _FAILED
@@ -361,24 +380,53 @@ def _argument_value(raw: str, reader: _Reader, line: int):
 
 # --------------------------------------------------------------------------- construction
 
-def _materialize(reader: _Reader) -> StateGraph | None:
-    nodes = []
-    declared: set[str] = set()
+def _label_map(reader: _Reader) -> tuple[dict[str, str], dict[str, str]]:
+    """Give every declared label a canonical id, by the order the labels were declared.
+
+    A label is a local name for one snapshot and carries no meaning beyond it, so a model that
+    writes `c1a` and `c1b` to show that two computations belong together, or `open_entries` because
+    it reads better, is saying nothing the graph does not already say with a `REFINES` edge. Losing
+    a whole candidate over the spelling of a name would be the format punishing the structure.
+
+    Labels are unique across both kinds, not within each: `INFO token` beside `COMPUTATION token`
+    would make `@token` and `EDGE token ...` ambiguous before anything is mapped.
+    """
+    kind_of: dict[str, str] = {}
+    order: dict[str, list[str]] = {"info": [], "computation": []}
     for block in reader.blocks:
         if not block.usable:
             continue
-        node = _information(block, reader) if block.kind == "info" else _computation(block, reader)
-        if node is None:
+        if block.node_id in kind_of:
+            reader.fail(block.line, f"{block.node_id!r} is declared twice in one snapshot")
             continue
-        if node.id in declared:
-            reader.fail(block.line, f"{node.id} is declared twice in one snapshot")
+        kind_of[block.node_id] = block.kind
+        order[block.kind].append(block.node_id)
+
+    mapping: dict[str, str] = {}
+    for prefix, kind in (("c", "computation"), ("i", "info")):
+        for position, label in enumerate(order[kind], start=1):
+            mapping[label] = f"{prefix}{position}"
+    for label, canonical in mapping.items():
+        if label != canonical:
+            reader.note("label", 0, f"{label} -> {canonical}")
+    return mapping, kind_of
+
+
+def _materialize(reader: _Reader) -> StateGraph | None:
+    mapping, kind_of = _label_map(reader)
+    nodes = []
+    for block in reader.blocks:
+        if not block.usable or block.node_id not in mapping:
             continue
-        declared.add(node.id)
-        nodes.append(node)
+        canonical = mapping[block.node_id]
+        node = (_information(block, canonical, reader) if block.kind == "info"
+                else _computation(block, canonical, mapping, kind_of, reader))
+        if node is not None:
+            nodes.append(node)
 
     for source, relation, target, line in reader.edges:
         for endpoint in (source, target):
-            if endpoint not in declared:
+            if endpoint not in mapping:
                 reader.fail(line, f"edge names {endpoint!r}, which no block declares")
 
     if reader.errors:
@@ -388,11 +436,11 @@ def _materialize(reader: _Reader) -> StateGraph | None:
     for node in nodes:
         graph.add(node)
     for source, relation, target, _ in reader.edges:
-        graph.add_edge(source, relation, target)
+        graph.add_edge(mapping[source], relation, mapping[target])
     return graph
 
 
-def _information(block: _Block, reader: _Reader) -> InformationNode | None:
+def _information(block: _Block, canonical: str, reader: _Reader) -> InformationNode | None:
     """Report everything wrong with this block that can be decided on its own.
 
     A bad `kind` says nothing about whether `available` is a word this grammar knows, so finding the
@@ -426,7 +474,7 @@ def _information(block: _Block, reader: _Reader) -> InformationNode | None:
     if payload is _FAILED or failed:
         return None
     try:
-        return InformationNode(id=block.node_id, kind=kind,
+        return InformationNode(id=canonical, kind=kind,
                                description=block.singles["description"][0],
                                available=available, payload=payload)
     except SchemaError as err:
@@ -502,13 +550,14 @@ def _declared_payload(block: _Block, reader: _Reader, declared: tuple[str, int],
         return _FAILED
 
 
-def _computation(block: _Block, reader: _Reader) -> ComputationNode | None:
+def _computation(block: _Block, canonical: str, mapping: dict[str, str],
+                 kind_of: dict[str, str], reader: _Reader) -> ComputationNode | None:
     failed = "description" not in block.singles
     if failed:
         reader.fail(block.line, f"{block.node_id} has no description")
     arguments = {}
     for key, value, line in block.arguments:
-        parsed = _argument_value(value, reader, line)
+        parsed = _argument_value(value, mapping, kind_of, reader, line)
         if parsed is _FAILED:
             failed = True
         else:
@@ -516,7 +565,7 @@ def _computation(block: _Block, reader: _Reader) -> ComputationNode | None:
     if failed:
         return None
     try:
-        return ComputationNode(id=block.node_id, description=block.singles["description"][0],
+        return ComputationNode(id=canonical, description=block.singles["description"][0],
                                operation=block.singles.get("operation", (None,))[0],
                                arguments=arguments)
     except SchemaError as err:

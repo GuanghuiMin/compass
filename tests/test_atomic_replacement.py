@@ -362,10 +362,18 @@ def test_a_missing_template_fails_before_a_call(tmp_path):
 
 
 def test_the_example_in_the_prompt_parses_and_is_a_graph_that_would_be_accepted():
+    """Through the pipeline, because the example is a semantic core by design.
+
+    It writes no interface edges, so raw validation refuses it -- and that is the example doing its
+    job: it shows the model the shape of an answer it is expected to give, which the system then
+    completes.
+    """
+    from future_graph.lifecycle import replace
     outcome = parse(prompt_example())
     assert outcome.errors == (), outcome.errors
-    from future_graph.validation import validate
-    assert validate(outcome.graph) == ()
+    result = replace(StateGraph(), outcome.graph)
+    assert result.accepted, [str(v) for v in result.violations]
+    assert [c.action for c in result.interface_changes] == ["added", "added"]
 
 
 def test_the_example_never_states_an_ordering_the_information_flow_already_states():
@@ -820,3 +828,93 @@ def test_a_rejected_candidate_leaves_the_previous_graph_byte_identical():
     assert result.record.resulting_snapshot == before
     assert result.record.collected == ()
     assert result.record.delta_h == "the slice"
+
+
+# --------------------------------------------------------------------------- interface ownership
+
+SEMANTIC_CORE = """\
+BEGIN_GRAPH
+
+INFO listing
+kind: fact
+available: true
+description: The confirmed listing interface
+END_INFO
+
+INFO gathered
+kind: result
+available: false
+description: The gathered records
+END_INFO
+
+COMPUTATION gather
+description: Gather the records
+END_COMPUTATION
+
+COMPUTATION first_page
+description: Retrieve the first page
+END_COMPUTATION
+
+COMPUTATION rest
+description: Continue to the end
+END_COMPUTATION
+
+COMPUTATION use
+description: Apply the change to each record
+END_COMPUTATION
+
+EDGE gather REFINES first_page
+EDGE gather REFINES rest
+EDGE listing REQUIRES first_page
+EDGE rest PRODUCES gathered
+EDGE gathered REQUIRES use
+
+END_GRAPH
+"""
+
+
+def test_a_candidate_with_labels_and_no_interfaces_is_accepted():
+    """Both repairs at once: hierarchical-free labels canonicalized, interfaces derived."""
+    _, result = run(SEMANTIC_CORE, previous=previous_graph())
+    assert result.record.accepted, result.record.violations
+    assert [c.id for c in result.graph.computations] == ["c1", "c2", "c3", "c4"]
+
+
+def test_the_record_carries_the_interface_edits():
+    _, result = run(SEMANTIC_CORE, previous=previous_graph())
+    assert result.record.interface_changes == (
+        ("added", "i1", "interface_input", "c1"),
+        ("added", "c1", "interface_output", "i2"))
+
+
+def test_the_parsed_candidate_is_recorded_before_completion():
+    """The snapshot shows what the model wrote; the result shows what was committed."""
+    _, result = run(SEMANTIC_CORE, previous=previous_graph())
+    written = result.record.parsed_candidate_snapshot["edges"]
+    committed = result.record.resulting_snapshot["edges"]
+    assert not any(e["relation"].startswith("interface") for e in written)
+    assert sum(e["relation"].startswith("interface") for e in committed) == 2
+
+
+def test_an_unchanged_boundary_records_no_interface_changes():
+    _, result = run(VALID, previous=previous_graph())
+    assert result.record.accepted and result.record.interface_changes == ()
+
+
+def test_the_interface_changes_round_trip_through_the_record():
+    _, result = run(SEMANTIC_CORE, previous=previous_graph())
+    payload = json.loads(json.dumps(result.record.to_dict()))
+    assert RegenerationRecord.from_dict(payload).interface_changes \
+        == result.record.interface_changes
+
+
+@pytest.mark.parametrize("entry,fragment", [
+    ([["moved", "i1", "interface_input", "c1"]], "removed or added"),
+    ([["added", "i1", "interface_input"]], "action, a source"),
+    ([["added", "i1", "interface_input", 7]], "action, a source"),
+])
+def test_a_malformed_interface_change_entry_is_rejected(entry, fragment):
+    raw = _record_dict()
+    raw["interface_changes"] = entry
+    with pytest.raises(ArtifactError, match=fragment):
+        RegenerationRecord.from_dict(raw)

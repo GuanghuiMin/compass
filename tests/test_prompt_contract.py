@@ -164,3 +164,34 @@ def test_no_scoring_or_ranking_mechanism_is_introduced(prompt):
     for forbidden in ("relevance score", "importance score", "importance weight",
                       "rank the information", "score each"):
         assert forbidden not in lowered, forbidden
+
+
+# --------------------------------------------------------------------------- who writes what
+
+def test_the_model_is_told_not_to_write_the_derived_interface_edges(prompt):
+    """The previous graph contains them, so silence would be read as permission to copy them."""
+    assert says(prompt, "do not write `interface_input` edges")
+    assert says(prompt, "do not write `interface_output` edges for information that is not "
+                        "available yet")
+    assert says(prompt, "they are not yours to copy forward")
+
+
+def test_the_derivation_is_explained_rather_than_just_forbidden(prompt):
+    assert says(prompt, "the system derives both from leaf-level `requires` and `produces`")
+
+
+def test_the_one_model_owned_interface_edge_is_stated_with_its_reason(prompt):
+    assert says(prompt, "write an `interface_output` in exactly one case")
+    assert says(prompt, "the child that produced it has since left the graph")
+    assert says(prompt, "an available node has no producer either way")
+
+
+def test_the_prompt_does_not_claim_the_model_writes_every_committed_edge(prompt):
+    assert says(prompt, "the committed graph holds a few edges you did not write")
+
+
+def test_labels_are_local_and_need_not_be_numbers(prompt):
+    assert says(prompt, "they are renumbered when the graph is read")
+    assert says(prompt, "a label does not have to be a number")
+    lowered = " ".join(prompt.lower().split())
+    assert "number your computations and information from scratch" not in lowered
