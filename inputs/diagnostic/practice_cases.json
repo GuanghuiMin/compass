@@ -1,0 +1,132 @@
+{
+ "note": "Eleven synthetic decision points for practice before the real annotation. Every application, interface, object and identifier here is invented. Nothing is taken from the corpus, and no case is a rewriting of a real packet. Work through them with rubric.md open, write down a class for each, and only then ask for the answer key.",
+ "shared_rules": "You are an assistant working through a task by writing Python in a REPL. Applications are reached through their APIs.\n\n# To list the applications available to you\nprint(apis.manifest_docs.show_app_descriptions())\n\n# To list the interfaces of an application\nprint(apis.manifest_docs.show_api_descriptions(app_name='nursery'))\n\n# To see one interface in detail\nprint(apis.manifest_docs.show_api_doc(app_name='nursery', api_name='create_entry'))\n\nWhen the task is finished, call apis.taskboard.mark_complete(). Pass answer= when the task asks for one.\n\nKey instructions:\n1. Bind values you will need again to variables; the interpreter keeps them between steps.\n2. Paginate wherever an interface returns pages.\n3. Never invent an interface or an identifier you have not seen.\n",
+ "cases": [
+  {
+   "practice_id": "synthetic_01",
+   "goal": "Register every seedling from this week's delivery in the nursery catalogue, and flag the ones that failed inspection.",
+   "prefix": [
+    {
+     "reasoning": "The work is: find this week's delivery, list its seedlings, register each one in the catalogue, then flag whichever failed inspection. I need the delivery identifier first.",
+     "code": "print(apis.depot.show_recent_deliveries(limit=1))",
+     "observation": "[\n {\n  \"delivery_id\": 4821,\n  \"arrived\": \"2031-03-04\",\n  \"seedling_count\": 12\n }\n]"
+    }
+   ]
+  },
+  {
+   "practice_id": "synthetic_02",
+   "goal": "Register every seedling from this week's delivery in the nursery catalogue, and flag the ones that failed inspection.",
+   "prefix": [
+    {
+     "reasoning": "The work is: find this week's delivery, list its seedlings, register each one, then flag the failures. Delivery 4821 has twelve seedlings and I have their identifiers.",
+     "code": "seedlings = apis.depot.show_delivery_contents(delivery_id=4821)\nprint(len(seedlings), seedlings[0])",
+     "observation": "12 {'seedling_id': 91001, 'species': 'hazel', 'tray': 'A'}"
+    },
+    {
+     "reasoning": "I will register them one at a time, starting with 91001, and then move on to the remaining eleven.",
+     "code": "print(apis.nursery.create_entry(seedling_id=91001, catalogue='spring'))",
+     "observation": "{'entry_id': 55120, 'seedling_id': 91001, 'catalogue': 'spring'}"
+    }
+   ]
+  },
+  {
+   "practice_id": "synthetic_03",
+   "goal": "Register every seedling from this week's delivery in the nursery catalogue, and flag the ones that failed inspection.",
+   "prefix": [
+    {
+     "reasoning": "I have the twelve seedlings of delivery 4821. Next I need to register each one in the catalogue. I do not yet know what registering involves, so let me look at what the nursery application offers.",
+     "code": "print(apis.manifest_docs.show_api_descriptions(app_name='nursery'))",
+     "observation": "[\n {\"name\": \"create_entry\", \"description\": \"Open a catalogue entry for a seedling.\"},\n {\"name\": \"attach_photo\", \"description\": \"Attach the intake photograph to an entry. An entry without one is not searchable.\"},\n {\"name\": \"set_status\", \"description\": \"Set an entry's status. A new entry is 'draft' until this is called.\"}\n]"
+    }
+   ]
+  },
+  {
+   "practice_id": "synthetic_04",
+   "goal": "Register every seedling from this week's delivery in the nursery catalogue, and flag the ones that failed inspection.",
+   "prefix": [
+    {
+     "reasoning": "The seedlings are registered. To flag the failures I will need to consult the inspection service at some point, though I have not worked out how yet.",
+     "code": "print(apis.manifest_docs.show_api_descriptions(app_name='inspection'))",
+     "observation": "[\n {\"name\": \"login\", \"description\": \"Obtain an inspector token from a username and password.\"},\n {\"name\": \"fetch_report\", \"description\": \"Return the inspection report for a delivery. Requires an inspector token.\"}\n]"
+    }
+   ]
+  },
+  {
+   "practice_id": "synthetic_05",
+   "goal": "Register every seedling from this week's delivery in the nursery catalogue, and flag the ones that failed inspection.",
+   "prefix": [
+    {
+     "reasoning": "Registering means create_entry, then attach_photo, then set_status. I will run create_entry for each of the twelve seedlings, beginning with 91001.",
+     "code": "print(apis.nursery.create_entry(seedling_id=91001, catalogue='spring'))",
+     "observation": "PermissionError: create_entry requires a curator token. Obtain one with apis.nursery.login(username=..., password=...) and pass it as curator_token."
+    }
+   ]
+  },
+  {
+   "practice_id": "synthetic_06",
+   "goal": "Register every seedling from this week's delivery in the nursery catalogue, and flag the ones that failed inspection.",
+   "prefix": [
+    {
+     "reasoning": "Twelve seedlings is a lot of individual calls. bulk_register takes a delivery and registers everything in it, so my plan is one bulk_register call for delivery 4821, then the failure flags.",
+     "code": "print(apis.nursery.bulk_register(delivery_id=4821, catalogue='spring', curator_token=curator_token))",
+     "observation": "GoneError: bulk_register was retired in this release. This application has no batch registration interface."
+    }
+   ]
+  },
+  {
+   "practice_id": "synthetic_07",
+   "goal": "Register every seedling from this week's delivery in the nursery catalogue, and flag the ones that failed inspection.",
+   "prefix": [
+    {
+     "reasoning": "I am registering all twelve seedlings of delivery 4821 into the 'spring' catalogue, one at a time, and 91001 is already in.",
+     "code": "print(apis.depot.show_delivery_note(delivery_id=4821))",
+     "observation": "{'delivery_id': 4821, 'origin': 'nursery B', 'note': 'Stock from nursery B is under a movement hold. It must be catalogued as quarantine and must not be placed in any seasonal catalogue until the hold is lifted.'}"
+    }
+   ]
+  },
+  {
+   "practice_id": "synthetic_08",
+   "goal": "Register every seedling from this week's delivery in the nursery catalogue, and flag the ones that failed inspection.",
+   "prefix": [
+    {
+     "reasoning": "Everything is registered. Now for the failures: I will call fetch_report for delivery 4821, take the seedlings it lists as failed, and flag each one.",
+     "code": "print(apis.inspection.fetch_report(delivery_id=4821))",
+     "observation": "GoneError: fetch_report has been replaced by fetch_report_v2, which reports per tray rather than per delivery and requires an inspector token."
+    }
+   ]
+  },
+  {
+   "practice_id": "synthetic_09",
+   "goal": "Register every seedling from this week's delivery in the nursery catalogue, and flag the ones that failed inspection.",
+   "prefix": [
+    {
+     "reasoning": "All twelve are registered and searchable. The inspection report named three failures, 91003, 91007 and 91011, and I have flagged the first two.",
+     "code": "print(apis.nursery.flag_entry(entry_id=55130, reason='failed inspection', curator_token=curator_token))",
+     "observation": "{'entry_id': 55130, 'seedling_id': 91011, 'flag': 'failed inspection'}"
+    }
+   ]
+  },
+  {
+   "practice_id": "synthetic_10",
+   "goal": "Register every seedling from this week's delivery in the nursery catalogue, and flag the ones that failed inspection.",
+   "prefix": [
+    {
+     "reasoning": "All twelve seedlings are registered and all three failures are flagged. Nothing remains, so I will close the task.",
+     "code": "print(apis.taskboard.mark_complete())",
+     "observation": "{'status': 'complete'}"
+    }
+   ]
+  },
+  {
+   "practice_id": "synthetic_11",
+   "goal": "Register every seedling from this week's delivery in the nursery catalogue, and flag the ones that failed inspection.",
+   "prefix": [
+    {
+     "reasoning": "Registering means create_entry, then attach_photo, then set_status. Here is create_entry for 91002.",
+     "code": "print(apis.nursery.create_entry(seedling_id=91002, catalogue='spring', curator_token=curator_token))",
+     "observation": "{'status': 'queued'}"
+    }
+   ]
+  }
+ ]
+}
