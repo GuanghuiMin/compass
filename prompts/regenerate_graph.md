@@ -92,6 +92,12 @@ edges itself.
 
 **Do not write `INTERFACE_INPUT` edges.**
 **Do not write `INTERFACE_OUTPUT` edges for information that is not available yet.**
+**Do not write a `REQUIRES` edge that one of the computation's own arguments already states.**
+
+That last one is not about interfaces but is the same idea: `argument token = @i2` already says which
+computation consumes `i2`, so the system adds `EDGE i2 REQUIRES <that computation>` itself. Write the
+argument and leave the edge. Do write `REQUIRES` for everything a computation needs that is *not* one
+of its arguments.
 
 The system derives both from leaf-level `REQUIRES` and `PRODUCES`: what a leaf inside the refinement
 needs and nothing inside produces crosses in; what a leaf inside produces and something outside
@@ -353,16 +359,18 @@ EDGE c1 REFINES c2
 EDGE c1 REFINES c3
 EDGE i1 REQUIRES c2
 EDGE c3 PRODUCES i2
-EDGE i2 REQUIRES c4
 EDGE c2 PRECEDES c3
 EDGE c1 PRECEDES c4
 
 END_GRAPH
 ```
 
-`c1` is refined into `c2` and `c3`, so it carries no operation and no `REQUIRES` or `PRODUCES` edge of
-its own. Note what is **not** written: `c1` needs `i1` from outside and will establish `i2` for `c4`,
-and neither interface edge appears here, because both follow from `i1 REQUIRES c2` and
-`c3 PRODUCES i2` and the system adds them. `c4` is ordered after the whole of `c1`, which is why that
-`PRECEDES` edge is written on `c1` itself. `c3` is an abstract leaf: no children and no operation, and
-it is still a leaf.
+`c1` is refined into `c2` and `c3`, so it carries no operation and no `PRODUCES` edge of its own.
+
+Note what is **not** written, because that is most of the point. `c1` needs `i1` from outside and will
+establish `i2` for `c4`, and neither interface edge appears here: both follow from `i1 REQUIRES c2`
+and `c3 PRODUCES i2`, and the system adds them. `c4` consumes `i2`, and no `EDGE i2 REQUIRES c4`
+appears either, because `argument records = @i2` already said so.
+
+`c4` is ordered after the whole of `c1`, which is why that `PRECEDES` edge is written on `c1` itself.
+`c3` is an abstract leaf: no children and no operation, and it is still a leaf.

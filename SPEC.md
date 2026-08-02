@@ -326,8 +326,19 @@ whatever else was in the same graph.
 4. **Availability.** `available=False` requires exactly one incoming `PRODUCES` edge.
    `available=True` may have no producer.
 5. **Argument references.** Every `InformationReference` in an argument names an existing information
-   node, and that node has a `REQUIRES` edge to the computation using it. A missing edge is a semantic
-   failure; the validator does not add it.
+   node, and that node has a `REQUIRES` edge to the computation using it.
+
+   That edge is **written by the code**, not by the model (§7 step 4). An argument reference already
+   names the information, names the computation consuming it, and fixes the relation, so nothing is
+   left to judge, and requiring the model to state it a second time only adds a way for a sound graph
+   to be refused. The invariant stays and its meaning shifts: after completion, a reference without
+   its edge means the completion or the graph is broken, not that the model forgot.
+
+   Completion is additive. It adds the edge a reference determines and removes nothing — including a
+   requirement the model placed on the refined computation above (§2.4), which may be
+   obligation-level knowledge or may be a misplacement, and telling those apart is a judgement about
+   meaning. The result may state the same dependency at two levels for a while. Saying it twice is
+   faithful; deleting the wrong one is not.
 6. **No history.** No completed or invalidated computation is present.
 7. **No orphan structure.** No dangling edge, no duplicate id within a snapshot, no unknown relation.
 8. **One parent.** Every computation has at most one incoming `REFINES` edge.
@@ -387,16 +398,22 @@ At a boundary:
 1. The previous graph stays untouched.
 2. The generator returns a complete candidate graph.
 3. The candidate is parsed; only surface syntax is normalized, labels included (§4).
-4. The code-owned interface edges are completed (§3.1): the model's declarations of those relations
-   are removed and the derived set is put in their place, on a **new** graph, so a candidate that is
-   later refused was never altered on the way to being refused.
-5. The completed candidate is validated whole, collecting every violation.
-6. Dead information — no outgoing `REQUIRES` — is removed deterministically. Code removes it; code
+4. The `REQUIRES` edge every argument reference implies is added (§6 rule 5). Additive only.
+5. The code-owned interface edges are completed (§3.1): the model's declarations of those relations
+   are removed and the derived set is put in their place.
+
+   Both completions build a **new** graph, so a candidate that is later refused was never altered on
+   the way to being refused. Arguments come first, and the order is load-bearing: an edge added in
+   step 4 can be the reason an information node crosses a boundary in step 5, and deriving the
+   interfaces first would leave the boundary incomplete and refuse the graph for a gap it does not
+   have.
+6. The completed candidate is validated whole, collecting every violation.
+7. Dead information — no outgoing `REQUIRES` — is removed deterministically. Code removes it; code
    never infers who a consumer *should* have been.
-7. If valid, the completed candidate replaces the previous graph atomically.
-8. If not, the previous graph survives byte-identically and nothing is collected, deleted or merged.
-9. Raw output, parsed candidate, normalization log, interface edits, verdicts and the resulting graph
-   are all saved.
+8. If valid, the completed candidate replaces the previous graph atomically.
+9. If not, the previous graph survives byte-identically and nothing is collected, deleted or merged.
+10. Raw output, parsed candidate, normalization log, both sets of completion edits, verdicts and the
+    resulting graph are all saved.
 
 Completion precedes validation because the thing validated has to be the thing committed.
 
@@ -718,7 +735,8 @@ raw output
   -> parse                       surface, labels included
   -> snapshot the parsed candidate, before anything mutates it
   -> replace(previous, candidate)
-       -> complete the code-owned interfaces, onto a new graph
+       -> add the REQUIRES edges the argument references imply
+       -> complete the code-owned interfaces
        -> validate
        -> collect
   -> render the accepted graph
@@ -763,9 +781,12 @@ parser's normalizations and errors; the parsed candidate snapshot when parsing s
 interface edits; the validation violations; the verdict; the resulting snapshot; the collected
 information ids; and the rendered handover.
 
-`interface_changes` holds every code-owned edge taken out of the candidate or put into it, as an
-action, a source, a relation and a target, in canonical ids and a deterministic order, and is empty
-when nothing moved. Removals are recorded as well as additions: without them the record would show a
+`interface_changes` holds every code-owned interface edge taken out of the candidate or put into it,
+as an action, a source, a relation and a target, in canonical ids and a deterministic order, and is
+empty when nothing moved. `argument_dependency_changes` holds the `REQUIRES` edges added from
+argument references, in the same shape. They are separate fields because they are different claims:
+one is derived from a whole subtree's dataflow, the other restates a single argument. The second
+never records a removal, because that step removes nothing. Removals are recorded as well as additions: without them the record would show a
 graph gaining edges and never show one losing them, and a declaration the code discarded would be
 invisible. An edge the model wrote that the derivation also produces is not reported, because it was
 removed and put back identically and listing it would bury the real edits.

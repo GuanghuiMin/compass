@@ -208,3 +208,12 @@ def test_a_refined_computation_may_require_but_not_produce(prompt):
 
 def test_placement_follows_the_consumer_and_not_the_kind(prompt):
     assert says(prompt, "decided by what actually consumes it, not by its kind")
+
+
+def test_the_model_is_told_the_argument_edge_is_written_for_it(prompt):
+    """The reference determines the edge, so asking for both only adds a way to fail."""
+    assert says(prompt, "do not write a `requires` edge that one of the computation's own "
+                        "arguments already states")
+    assert says(prompt, "the system adds `edge i2 requires <that computation>` itself")
+    assert says(prompt, "do write `requires` for everything a computation needs that is *not* one "
+                        "of its arguments")

@@ -75,6 +75,7 @@ class RegenerationRecord:
     parse_errors: tuple[tuple[int, str], ...]
     parsed_candidate_snapshot: dict | None
     interface_changes: tuple[tuple[str, str, str, str], ...]
+    argument_dependency_changes: tuple[tuple[str, str, str, str], ...]
     violations: tuple[tuple[str, str, tuple[str, ...]], ...]
     accepted: bool
     resulting_snapshot: dict
@@ -102,6 +103,8 @@ class RegenerationRecord:
             "parse_errors": [[line, message] for line, message in self.parse_errors],
             "parsed_candidate_snapshot": self.parsed_candidate_snapshot,
             "interface_changes": [list(change) for change in self.interface_changes],
+            "argument_dependency_changes": [list(change) for change
+                                            in self.argument_dependency_changes],
             "violations": [[code, message, list(nodes)]
                            for code, message, nodes in self.violations],
             "accepted": self.accepted,
@@ -142,6 +145,8 @@ class RegenerationRecord:
         normalizations = tuple(_strings(raw["normalizations"], "normalizations"))
         parse_errors = tuple(_parse_error(item) for item in raw["parse_errors"])
         interface_changes = tuple(_interface_change(item) for item in raw["interface_changes"])
+        argument_changes = tuple(_interface_change(item, "argument_dependency_changes")
+                                 for item in raw["argument_dependency_changes"])
         violations = tuple(_violation(item) for item in raw["violations"])
         collected = tuple(_strings(raw["collected"], "collected"))
         _check_outcome(raw)
@@ -152,6 +157,7 @@ class RegenerationRecord:
             raw_output=raw["raw_output"], normalizations=normalizations,
             parse_errors=parse_errors, parsed_candidate_snapshot=candidate,
             interface_changes=interface_changes,
+            argument_dependency_changes=argument_changes,
             violations=violations, accepted=raw["accepted"],
             resulting_snapshot=raw["resulting_snapshot"], collected=collected,
             handover=raw["handover"],
@@ -162,7 +168,7 @@ _FIELD_TYPES: dict[str, object] = {
     "goal": str, "rules": str, "delta_h": str, "previous_snapshot": dict,
     "model_call": dict, "prompt_sha": str, "raw_output": str, "normalizations": list,
     "parse_errors": list, "parsed_candidate_snapshot": None, "interface_changes": list,
-    "violations": list,
+    "argument_dependency_changes": list, "violations": list,
     "accepted": bool, "resulting_snapshot": dict, "collected": list, "handover": str,
 }
 
@@ -274,13 +280,16 @@ def _parse_error(item: object) -> tuple[int, str]:
     return item[0], item[1]
 
 
-def _interface_change(item: object) -> tuple[str, str, str, str]:
-    """One code-owned edge taken out of the candidate or put into it, in canonical ids."""
+def _interface_change(item: object, where: str = "interface_changes") -> tuple[str, str, str, str]:
+    """One edge the code took out of the candidate or put into it, in canonical ids."""
     if not isinstance(item, list) or len(item) != 4 or not all(isinstance(x, str) for x in item):
-        raise ArtifactError(f"record interface_changes: {item!r} is not an action, a source, "
+        raise ArtifactError(f"record {where}: {item!r} is not an action, a source, "
                             "a relation and a target")
     if item[0] not in ("removed", "added"):
-        raise ArtifactError(f"record interface_changes: {item[0]!r} is not removed or added")
+        raise ArtifactError(f"record {where}: {item[0]!r} is not removed or added")
+    if where == "argument_dependency_changes" and item[0] != "added":
+        raise ArtifactError("record argument_dependency_changes: this step removes nothing, "
+                            f"and {item[0]!r} says otherwise")
     return item[0], item[1], item[2], item[3]
 
 

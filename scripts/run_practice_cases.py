@@ -42,7 +42,7 @@ from future_graph import (                                            # noqa: E4
     ComputationNode, ContractPayload, InformationKind, InformationNode, InformationReference,
     Relation, RuntimeReferencePayload, build,
 )
-from future_graph.adapter import from_environment                     # noqa: E402
+from future_graph.adapter import EmptyModelCompletion, from_environment   # noqa: E402
 from future_graph.artifacts import RegenerationRecord                 # noqa: E402
 from future_graph.episodes import REPO_ROOT                           # noqa: E402
 from future_graph.regeneration import regenerate_graph                # noqa: E402
@@ -294,14 +294,26 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"{args.out} exists, and a run never writes into an existing directory")
     args.out.mkdir(parents=True, exist_ok=False)
 
+    unanswered = []
     for case in cases:
         name = case["practice_id"]
         previous = PREVIOUS_GRAPHS[name]()
         delta_h = build_slice(case)
         print(f"{name}: previous graph {len(previous)} nodes, slice {len(delta_h)} bytes",
               flush=True)
-        result = regenerate_graph(case["goal"], shared_rules, previous, delta_h,
-                                  model, FROZEN_CONFIG)
+        try:
+            result = regenerate_graph(case["goal"], shared_rules, previous, delta_h,
+                                      model, FROZEN_CONFIG)
+        except EmptyModelCompletion as err:
+            # Not a refused graph: nothing was generated. Recorded as the call event it is, in a
+            # file no one can mistake for a boundary record, and the run moves on. It is not
+            # retried -- a retry here would silently turn one sample into several.
+            (args.out / f"{name}.model-call-failure.json").write_text(
+                json.dumps({"practice_id": name, "event": "empty_model_completion",
+                            "detail": str(err)}, indent=1) + "\n", encoding="utf-8")
+            unanswered.append(name)
+            print(f"{name}: no answer from the provider; not a graph result", flush=True)
+            continue
         write_record(args.out / f"{name}.json", result.record)
         verdict = "accepted" if result.record.accepted else "refused"
         print(f"{name}: {verdict}, "
@@ -309,6 +321,9 @@ def main(argv: list[str] | None = None) -> int:
               f"{len(result.record.violations)} violations", flush=True)
 
     print(f"\nrecords in {args.out}")
+    if unanswered:
+        print(f"no answer at all for: {', '.join(unanswered)} — these are call events, not "
+              "graph results, and must not be counted as refusals")
     print("Read them. Parsing and validating is not absorbing.")
     return 0
 
