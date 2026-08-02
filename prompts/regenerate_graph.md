@@ -122,26 +122,155 @@ or the slice you were given establish.
 
 # What to do with the slice
 
+Work in this order, and do not shorten it:
+
+```text
+A. Read PREVIOUS_GRAPH and DELTA_H together, all of DELTA_H.
+B. Decide what the remaining plan should now be.
+C. Decide what evidence that revised plan still consumes.
+D. Write the complete replacement graph, and nothing else.
+```
+
+**The order is the point.** Deciding what to keep before deciding what the plan is means keeping what
+the *old* plan needed. Evidence that looks irrelevant against the previous graph is often exactly what
+the revised one turns on: the detail that closes a route, the parameter a corrected call needs, the
+point to resume from. So revise first, then keep what the revision consumes.
+
+## A. Read the whole slice
+
+Read all of `DELTA_H`, including the parts that look like noise, and including every observation in
+full. A long error is not less important for being long.
+
+Work out what it establishes. It may be any of these, and it may be several at once:
+
+- ordinary progress inside a computation that is already in the graph;
+- part or all of a computation finished;
+- an abstract leaf now understood well enough to refine;
+- a route that was committed to and has turned out to be invalid;
+- a prerequisite nobody knew about;
+- an operation name or an argument that was wrong and is now corrected;
+- a new constraint on the task;
+- partial progress that must be continued rather than started again;
+- a result, an identifier, a cursor, a confirmed interface or a bound name that now exists;
+- the substantive work being done, so that only the closing action remains;
+- the closing action having already happened;
+- evidence that genuinely settles nothing, which must not be read as more than it is.
+
+Do not write any of these into the graph as a label. There is no field for them. They are how you
+decide what the next graph looks like.
+
+## B. Revise the plan first
+
+Write the remaining computation as the new evidence says it should be. You may remove finished work,
+replace an invalid branch, add a prerequisite, refine an abstract leaf into children, correct an
+operation or an argument, change the order, keep partial progress and add work that continues from it,
+add recovery or verification work, and delete future work the slice proves unnecessary.
+
 **Work that finished leaves the graph.** Do not carry a completed computation forward in any form. If
-what it established still matters, that becomes an available information node, wired to the
-computations that consume it. If nothing ahead needs it, both the computation and its result are gone.
+what it established still matters, it becomes an available information node wired to the computations
+that consume it. If nothing ahead needs it, the computation and its result both go.
 
-**Let what happened change the plan.** An abstract leaf can be refined into concrete children. A
-prerequisite you did not know about can appear, and when it does, the leaf that needs it requires it
-and every refined computation above it declares it as an interface input. A branch that turned out to be
-impossible is removed rather than kept and marked. A failure that changes what remains becomes a
-`failure_consequence` required by the revised computation — "the search interface does not accept
-partial names" — never a copy of the error message.
+### An error that changes the future must change the graph
 
-**Work interrupted halfway is not marked as in progress.** There is no such state, and you should not
-try to express one. What was achieved becomes available information: the partial result, the point to
-continue from, what is done, what is left. What remains becomes a computation that continues rather
-than restarts, requiring that information. The finished whole is separate information, not yet
-available, produced by that computation. The partial thing and the complete thing are two nodes, so
-that a computation needing all of it cannot read the part that exists.
+"The previous call failed" is not an absorbed error. It tells the agent that something went wrong and
+leaves it to fail the same way again.
+
+When an error changes what has to happen next, the graph you return carries every exact detail needed
+to recover, as information nodes with real consumers. Where the slice establishes them, that includes:
+
+- which operation failed, and which operation replaces it;
+- the exact parameter that was missing or wrong;
+- a token, permission or authentication requirement;
+- the accepted values or the required format of a value;
+- an interface that is not available at all;
+- a change of granularity — per item, per page, per group — that the remaining work must now follow;
+- an identifier of the object or resource involved;
+- a state the application must be in first;
+- a retry or backoff condition;
+- work already done that must not be done again;
+- a check that must be made after recovering.
+
+Put each in the kind that fits it: `contract` for a confirmed interface and its parameters,
+`constraint` for a limit the remaining work must respect, `fact` for an established value,
+`runtime_reference` for a name the agent bound, `result` for something a computation will establish,
+and `failure_consequence` for what the failure means for the work ahead.
+
+A `failure_consequence` carries the consequence — "the batch route does not exist" — and it does not
+stand in for the details. The replacement interface, the missing parameter, the accepted values and the
+identifier are their own nodes, because the revised plan consumes them and a sentence about the failure
+is not something a computation can use.
+
+**Keep exact things exact.** An operation name, a parameter name, an accepted value, an identifier, a
+cursor and a recovery condition are copied as they were established. "An authentication step is
+needed" instead of the operation that provides the token, or "the argument was wrong" instead of the
+argument's name, is the detail thrown away at the moment it became necessary.
+
+### An invalid route disappears
+
+If the slice proves the route cannot work, the returned graph must not still contain it with a warning
+attached. Something in the structure changes: the operation, the arguments, a new prerequisite ahead of
+it, different refinement children, a different branch, a different order, an added recovery step, an
+added verification step, or the computation is gone.
+
+A permission failure means the work that obtains the permission comes first, and the corrected call
+depends on it. A retired interface means the route that used it is removed and replaced by one that
+exists. An interface that has been replaced *and* now needs a token *and* now returns per group means
+all three: the old route goes, the token becomes a prerequisite, and the remaining work is shaped
+around the new granularity.
+
+### A failure that is only temporary is not a reason to replan
+
+If the slice establishes that the call was correct and the failure was transient, keep it. Do not
+invent a different route because something timed out once.
+
+Keep whatever the evidence gives you about retrying — the condition, the backoff, whether the call is
+safe to repeat, the state to check first, a stated limit. Do not invent a retry policy. If the goal,
+the rules, the previous graph and the slice do not state one, there is not one.
+
+### Work interrupted halfway
+
+There is no in-progress state and you should not try to express one. What was achieved becomes
+available information: the partial result, the point to continue from, what is done, what is left.
+What remains becomes a computation that continues rather than restarts, requiring that information.
+The finished whole is separate information, not yet available, produced by that computation. The
+partial thing and the complete thing are two nodes, so that a computation needing all of it cannot
+read the part that exists.
+
+This covers one item done and the rest pending, a processed and an unprocessed set, a set that
+succeeded and a set that failed, a cursor or a next page, an accumulator, the last identifier
+confirmed, and verification still owed. After compaction the agent must not redo any of it.
+
+## C. Then decide what evidence survives
+
+Now, and only now, work out which information the revised plan consumes.
+
+Keep what at least one remaining computation requires; what a surviving branch shares; what unfinished
+leaves inside a refinement still use; what genuinely crosses a refinement boundary; error-derived
+information that still changes or constrains what happens next; and the exact state needed to continue
+partial work.
+
+Drop what only completed work used; what only an invalidated branch used; observations that changed
+nothing; and error text whose consequences are now expressed in the structure. Once the graph says the
+token is required and the corrected operation is in place, the sentence describing the failure has
+nothing left to do.
 
 **Copy nothing large.** A result you were shown is not to be pasted into a description or a value. If
 a computation ahead needs it, give it an information node that says what it is.
+
+## Whether you absorbed enough
+
+Before writing the graph, check that it and it alone would let the agent work out:
+
+1. what remaining objective is active;
+2. what is already done;
+3. which route is closed, where one is;
+4. the exact next recovery or continuation step;
+5. the exact values, identifiers, interfaces and constraints that step needs;
+6. what must not be repeated;
+7. what still matters to work further ahead.
+
+If the graph does not answer one of those and the slice did, the evidence has been lost and the graph
+is not finished.
 
 # What you are given
 

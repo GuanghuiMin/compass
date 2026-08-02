@@ -553,6 +553,19 @@ how regeneration works.
 
 The model sees no discarded history, no runtime, no registry and no state held anywhere else.
 
+**What "the exact slice" claims, exactly.** `delta_h` is a string the caller hands in, and
+`build_user_message` places it between `BEGIN_DELTA_H` and `END_DELTA_H` by concatenation: nothing is
+stripped, normalized, escaped, summarized, truncated or re-encoded, and it appears once. The claim this
+system can make is therefore about its own boundary — the string it receives reaches the model in
+full and unrewritten — and it stops there. It is **not** a claim of byte identity with whatever the
+agent's environment originally produced. In the AppWorld integration the host has already rendered
+structured messages into `USER:` and `ASSISTANT:` text before Compass is called, so fidelity upstream
+of that boundary is the host's property and not this system's.
+
+An error carries no marker. On that path an error is ordinary observation text, and it survives because
+nothing truncates or paraphrases it, not because anything protects it. The updater is therefore
+instructed to read every observation in full rather than to look for a flag.
+
 ### 12.2 What it returns
 
 One complete replacement graph in the protocol form. Never a patch, never a diff, never part of a
@@ -563,7 +576,59 @@ name or task from any benchmark in it. The example teaches the form, including t
 the work below it name the same information nodes, and does not suggest that work comes in any
 particular number of steps.
 
-### 12.3 The pipeline
+### 12.3 Revise the plan, then keep what it consumes
+
+The updater does one thing, in one call, in this order:
+
+```text
+previous graph + delta_h
+  -> what the slice changes about the remaining work
+  -> the revised remaining plan
+  -> the evidence that revised plan consumes
+  -> everything else dropped
+  -> one complete replacement graph
+```
+
+**The order is a requirement, not a description.** Deciding what to keep before deciding what the plan
+is keeps what the *previous* plan needed, and the evidence a revision turns on is exactly the evidence
+the old plan had no use for: the detail that closes a route, the parameter a corrected call takes, the
+point to resume from. Pruning first throws it away before anything can ask for it.
+
+This is a property of the prompt and of the graph the model returns. It is not a pipeline stage, not a
+second call, and nothing in the code enforces an ordering on the model's reasoning: `regeneration.py`
+makes one call and takes one graph. What the code does enforce is that the *result* holds together —
+every retained information node has a consumer, or it is collected (§7).
+
+Retention is decided by the revised plan and by nothing else. There is no relevance score, no
+importance weight, no age threshold, no preserve list, no archive, no keyword classification of errors,
+and no second model deciding what to keep. An information node survives because a remaining
+computation requires it.
+
+### 12.4 Sufficient absorption
+
+A slice has been absorbed sufficiently only when the resulting graph and its rendered handover, alone,
+let the downstream agent determine:
+
+1. which remaining objective is active;
+2. what is already complete;
+3. which route is closed, where one is;
+4. the exact next recovery or continuation step;
+5. the exact values, identifiers, interfaces and constraints that step needs;
+6. what must not be repeated;
+7. what information still matters to work further ahead.
+
+An error is not absorbed by a sentence saying that something failed. When an error changes what happens
+next, the exact operation, the replacement operation, the missing parameter, the accepted values, the
+authentication requirement, the identifier, the changed granularity and the required verification are
+carried as information nodes with real consumers, in the kinds §2.2 already defines. A
+`failure_consequence` carries the consequence and does not stand in for those details.
+
+**This is a criterion for the prompt and for reading model output. It is not a code check**, and it
+must not be implemented as one: whether a natural-language description carries enough to recover is
+the kind of question §14 keeps out of the validator, and a checker that guessed at it would refuse
+sound graphs and pass unsound ones with equal confidence.
+
+### 12.5 The pipeline
 
 ```text
 raw output
@@ -580,7 +645,7 @@ The candidate is snapshotted **before** replacement, because replacement collect
 it in place. What the model produced and what was committed are two different things, and an audit that
 can only see the second cannot tell whether the model wrote an information node nobody consumes.
 
-### 12.4 Failure, at the layer that produced it
+### 12.6 Failure, at the layer that produced it
 
 A parse failure or a validation violation leaves the previous graph unchanged and is reported as what
 it is. There is no semantic repair, no placeholder node, no guessed edge or consumer, and no automatic
@@ -592,7 +657,7 @@ all. A service failure recorded as `accepted = false` would enter the measuremen
 compressor writes bad graphs. If the call returns something that is not text, that is a broken adapter
 and raises `TypeError` rather than reaching the parser.
 
-### 12.5 The call, and the record of it
+### 12.7 The call, and the record of it
 
 The system message is the rendered prompt template: the method, the grammar, the example. The user
 message is the four inputs, each in its own section, inserted exactly as given — the only transformation

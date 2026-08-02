@@ -553,3 +553,270 @@ def test_the_user_message_builder_is_the_only_layout():
         "\nBEGIN_FIXED_RULES\nr\nEND_FIXED_RULES\n"
         "\nBEGIN_PREVIOUS_GRAPH\nBEGIN_GRAPH\n\nEND_GRAPH\nEND_PREVIOUS_GRAPH\n"
         "\nBEGIN_DELTA_H\nd\nEND_DELTA_H\n")
+
+
+# --------------------------------------------------------------------------- absorbing a slice
+#
+# Two different questions live below, and conflating them would be the easiest way to overclaim.
+#
+# The first is fidelity: does the exact slice this system was handed reach the model unrewritten.
+# That is a property of `build_user_message` and it is fully testable here.
+#
+# The second is what the pipeline does with a candidate that absorbed the slice well or badly. Those
+# tests hand the pipeline a fixed answer and check that acceptance, collection and refusal behave.
+# **They demonstrate nothing about whether a model would write that answer**; only a model-backed run
+# can speak to that.
+
+ERROR_SLICE = (
+    'ASSISTANT:\nprint(apis.example.open_entry(record_id=91001, catalogue="spring"))\n\n'
+    'USER:\n'
+    'PermissionError: open_entry requires a curator token.\n'
+    '  Obtain one with apis.example.sign_in(username=..., password=...)\n'
+    '  and pass it as curator_token="...".\n'
+    '  Field \'catalogue\' accepts one of: "spring" | "summer" | \'autumn\'.\n'
+    '\tTraceback (most recent call last): 100% [==>] {"code": 403}\n'
+)
+
+
+def test_the_exact_slice_reaches_the_model_unrewritten():
+    """Punctuation, quotes of both kinds, tabs, newlines, an operation and a parameter name."""
+    stub = Stub(VALID)
+    regenerate_graph("the goal", "the rules", previous_graph(), ERROR_SLICE, stub, {})
+    user = stub.calls[0].user
+    assert f"BEGIN_DELTA_H\n{ERROR_SLICE}\nEND_DELTA_H\n" in user
+
+
+def test_the_slice_appears_exactly_once_in_the_user_message():
+    """Duplicating it would double every observation and change what the model is reading."""
+    stub = Stub(VALID)
+    regenerate_graph("the goal", "the rules", previous_graph(), ERROR_SLICE, stub, {})
+    assert stub.calls[0].user.count(ERROR_SLICE) == 1
+    assert stub.calls[0].user.count("BEGIN_DELTA_H") == 1
+
+
+@pytest.mark.parametrize("fragment", [
+    'curator_token="..."', "apis.example.sign_in(username=..., password=...)",
+    '"spring" | "summer" | \'autumn\'', '{"code": 403}', "100% [==>]",
+    "\tTraceback", "PermissionError: open_entry requires a curator token.",
+])
+def test_no_fragment_of_the_slice_is_escaped_or_normalized(fragment):
+    """Each of these has been mangled by some layer in some system. Not by this one."""
+    stub = Stub(VALID)
+    regenerate_graph("g", "r", previous_graph(), ERROR_SLICE, stub, {})
+    assert fragment in stub.calls[0].user
+
+
+def test_the_slice_is_recorded_as_it_was_received():
+    """A review of what the model saw depends on the record holding the slice, not a copy of it."""
+    result = regenerate_graph("g", "r", previous_graph(), ERROR_SLICE, Stub(VALID), {})
+    assert result.record.delta_h == ERROR_SLICE
+    assert result.record.to_dict()["delta_h"] == ERROR_SLICE
+
+
+def test_a_slice_without_an_error_takes_the_same_path():
+    """No branch anywhere looks at whether the slice contains a failure."""
+    plain = "ASSISTANT:\nprint(apis.example.list_entries())\n\nUSER:\n[{'id': 91001}]\n"
+    stub = Stub(VALID)
+    regenerate_graph("the goal", "the rules", previous_graph(), plain, stub, {})
+    assert f"BEGIN_DELTA_H\n{plain}\nEND_DELTA_H\n" in stub.calls[0].user
+    assert build_user_message("the goal", "the rules", previous_graph(), plain) \
+        == stub.calls[0].user
+
+
+# --------------------------------------------------------------------------- candidate semantics
+
+REPLACED_BRANCH = """\
+BEGIN_GRAPH
+
+INFO i1
+kind: failure_consequence
+available: true
+description: The batch route does not exist, so entries are opened one at a time
+END_INFO
+
+INFO i2
+kind: contract
+available: true
+description: The confirmed single-entry interface
+contract-operation: example.open_entry
+contract-parameter: record_id
+contract-parameter: curator_token
+END_INFO
+
+INFO i3
+kind: runtime_reference
+available: true
+description: The curator token the sign-in established
+runtime-name: curator_token
+END_INFO
+
+COMPUTATION c1
+description: Open a catalogue entry for each record in turn
+operation: example.open_entry
+argument curator_token = @i3
+END_COMPUTATION
+
+EDGE i1 REQUIRES c1
+EDGE i2 REQUIRES c1
+EDGE i3 REQUIRES c1
+
+END_GRAPH
+"""
+
+
+def batch_route_graph():
+    """The previous plan: one call registering everything at once, plus what only it needed."""
+    from future_graph import ContractPayload
+    return build(
+        nodes=[ComputationNode(id="c1", description="Register every record in one batch call",
+                               operation="example.batch_register"),
+               InformationNode(id="i1", kind=InformationKind.CONTRACT,
+                               description="The batch interface", available=True,
+                               payload=ContractPayload("example.batch_register", ("records",))),
+               InformationNode(id="i2", kind=InformationKind.FACT,
+                               description="The records to register", available=True)],
+        edges=[("i1", Relation.REQUIRES, "c1"), ("i2", Relation.REQUIRES, "c1")])
+
+
+def test_a_candidate_that_replaces_an_invalid_branch_is_accepted_and_rendered():
+    stub, result = run(REPLACED_BRANCH, previous=batch_route_graph())
+    assert result.record.accepted and result.record.violations == ()
+    assert [c.id for c in result.graph.computations] == ["c1"]
+    assert result.graph.node("c1").operation == "example.open_entry"
+    assert "example.batch_register" not in result.record.handover
+
+
+def test_a_candidate_keeping_exact_recovery_detail_is_accepted_with_it_intact():
+    """The bound name, the replacement operation and the parameter names survive verbatim."""
+    _, result = run(REPLACED_BRANCH, previous=batch_route_graph())
+    handover = result.record.handover
+    assert "bound as curator_token" in handover
+    assert "example.open_entry, takes record_id, curator_token" in handover
+    assert "curator_token = @i3" in handover
+
+
+def test_information_only_the_removed_branch_used_is_collected():
+    """It is not in the candidate at all, so it simply does not survive the replacement."""
+    previous = batch_route_graph()
+    before = previous.to_snapshot()
+    _, result = run(REPLACED_BRANCH, previous=previous)
+    surviving = {i.description for i in result.graph.information}
+    assert "The batch interface" not in surviving
+    assert previous.to_snapshot() == before        # the previous graph itself is untouched
+
+
+SHARED_AND_STALE = """\
+BEGIN_GRAPH
+
+INFO i1
+kind: fact
+available: true
+description: The records to register
+END_INFO
+
+INFO i2
+kind: fact
+available: true
+description: Wanted by nothing that remains
+END_INFO
+
+COMPUTATION c1
+description: Open a catalogue entry for each record in turn
+END_COMPUTATION
+
+COMPUTATION c2
+description: Confirm every entry was opened
+END_COMPUTATION
+
+EDGE i1 REQUIRES c1
+EDGE i1 REQUIRES c2
+EDGE c1 PRECEDES c2
+
+END_GRAPH
+"""
+
+
+def test_information_a_surviving_branch_still_shares_remains():
+    _, result = run(SHARED_AND_STALE, previous=batch_route_graph())
+    assert result.record.accepted
+    kept = {i.description for i in result.graph.information}
+    assert "The records to register" in kept
+    assert result.graph.consumers_of("i1") == ("c1", "c2")
+
+
+def test_information_the_revised_plan_does_not_consume_is_collected():
+    _, result = run(SHARED_AND_STALE, previous=batch_route_graph())
+    assert result.record.collected == ("i2",)
+    assert "Wanted by nothing that remains" not in result.record.handover
+    # what the model wrote and what was committed are two different things, and both are recorded
+    written = {i["description"] for i in result.record.parsed_candidate_snapshot["information"]}
+    assert "Wanted by nothing that remains" in written
+
+
+PARTIAL_PROGRESS = """\
+BEGIN_GRAPH
+
+INFO i1
+kind: result
+available: true
+description: The eleven record ids still to be registered
+payload-type: list
+item: 91002
+item: 91003
+END_INFO
+
+INFO i2
+kind: runtime_reference
+available: true
+description: The accumulator holding the entries opened so far
+runtime-name: opened_entries
+END_INFO
+
+INFO i3
+kind: result
+available: false
+description: The complete set of opened entries
+END_INFO
+
+COMPUTATION c1
+description: Continue opening entries for the records that remain
+END_COMPUTATION
+
+COMPUTATION c2
+description: Confirm the complete set is present
+END_COMPUTATION
+
+EDGE i1 REQUIRES c1
+EDGE i2 REQUIRES c1
+EDGE c1 PRODUCES i3
+EDGE i3 REQUIRES c2
+
+END_GRAPH
+"""
+
+
+def test_partial_progress_becomes_continuation_information_plus_remaining_work():
+    """What was achieved is available; what remains continues; the whole is a separate node."""
+    _, result = run(PARTIAL_PROGRESS, previous=batch_route_graph())
+    assert result.record.accepted
+    graph = result.graph
+    assert graph.node("i1").available and graph.node("i2").available
+    assert not graph.node("i3").available          # the complete set does not exist yet
+    assert graph.produces_of("c1") == ("i3",)
+    assert "Continue opening entries" in graph.node("c1").description
+    # the partial accumulator and the finished whole are two nodes, so a consumer needing all of
+    # it cannot read the part that exists
+    assert graph.consumers_of("i2") == ("c1",)
+    assert graph.consumers_of("i3") == ("c2",)
+
+
+def test_a_rejected_candidate_leaves_the_previous_graph_byte_identical():
+    previous = batch_route_graph()
+    before = previous.to_snapshot()
+    _, result = run(INVALID, previous=previous)
+    assert result.record.accepted is False
+    assert result.graph is previous
+    assert previous.to_snapshot() == before
+    assert result.record.resulting_snapshot == before
+    assert result.record.collected == ()
+    assert result.record.delta_h == "the slice"
