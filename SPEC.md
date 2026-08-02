@@ -1063,6 +1063,8 @@ Everything §12.7 requires, and each change filed under whoever made it:
 | `completion_changes` | §12.10, kept out of interface completion |
 | `id_map` | every previous id or new label, and what it became |
 | `newly_created_then_collected` | information the revision introduced that this same boundary collected |
+| `argument_dependency_changes`, `interface_changes`, `ordering_repairs` | as in §12.7 |
+| `faults` | why application refused, distinct from `parse_errors` and `violations` |
 
 `affected_roots`, `touched_nodes`, `removed_nodes` and `removed_edges` are `previous`.
 `replacement_boundary_changes`, `interface_changes`, `argument_dependency_changes`,
@@ -1071,8 +1073,6 @@ Everything §12.7 requires, and each change filed under whoever made it:
 producer in `previous` in its own field, because a removed producer has no assembled identity.
 A fault names entities as the model wrote them, so each is `revision` or `previous`; a validation
 violation names the graph it validated, so those are `assembled`.
-| `argument_dependency_changes`, `interface_changes`, `ordering_repairs` | as in §12.7 |
-| `faults` | why application refused, distinct from `parse_errors` and `violations` |
 
 ### 12.14 Operational retry
 
@@ -1214,6 +1214,91 @@ The report may say that the sampled regeneration at boundary *k* was rejected. I
 boundary *k* is rejected, that rejection is an inherent property of that boundary, or that one sample
 estimates a rejection probability or a boundary's difficulty. A rerun is a new stochastic run: it never
 completes an earlier one and never overwrites it.
+
+---
+
+## 13A. The online loop
+
+Frozen-slice replay shows that the updater can absorb a trajectory. It cannot show that the graph
+changes one, because the trajectory was produced by a different compressor and cannot respond to
+anything this system writes. The online loop closes that:
+
+```text
+agent acts → the host's token trigger fires → previous graph + newly generated delta_h
+→ local revision → deterministic handover → the host replaces the compacted history
+→ the agent acts again, under the handover → the next boundary consumes that new trajectory
+```
+
+The host is the existing AppWorld harness. Its compaction seam, token trigger, preserved final turn,
+`<HISTORY_SUMMARY>` wrapper, system-message reconstruction, downstream model, executor, evaluator and
+every baseline are unchanged. The only difference is which object answers at the seam.
+
+### 13A.1 A boundary is two moments, so the transition is two phases
+
+The host asks for a handover and only afterwards splices it into the context the agent will act on.
+If the graph moved when the handover was produced and the splice then failed, the state of record
+would describe a context that never existed.
+
+```text
+prepare   compute the whole transition, write the record to a pending path, read it back
+          strictly, return the handover -- and leave the active graph alone
+splice    the host's own, unchanged
+commit    rebind the active graph, move the record into place, and only then is the boundary true
+abort     drop the prepared transition and the pending record; the graph never moved
+```
+
+The commit is an in-memory rebind and derives nothing. If preparation raises, no splice happened. If
+the splice raises, the runner aborts the pending transition and restores its pre-splice snapshot of
+the host's session, and the run stops — for this method only; every other method keeps the host's
+existing catch-and-warn behavior. A boundary that could not be committed is never reported as one.
+
+### 13A.2 Refusal still compacts
+
+The token threshold fired, so the context must shrink whether or not the revision was usable. A
+refused boundary keeps the previous graph byte-identically and splices **that graph's** handover,
+discarding the slice from every future updater input.
+
+Leaving the history uncompacted instead would hand the method a full-context advantage at exactly
+the boundaries where its updater failed, which would make refusals look harmless in the results.
+
+The agent has already executed the refused slice. Only its future textual representation is gone;
+the environment and the tool-side state are not rolled back.
+
+### 13A.3 What the host and the adapter must agree about
+
+Before every call, the host's `prev_history_summary` must equal the handover the active graph
+renders to — empty before the first commit, exact thereafter. A mismatch means something other than
+this adapter has been compacting, and it stops the run **before** a model call rather than producing
+a record computed against the wrong state.
+
+The adapter holds one graph for one episode and is constructed per task. It calls `update_graph` and
+nothing else: never complete-graph regeneration, never the downstream model, never a semantic retry.
+The host passes it the retained full history as `raw_history` and its own bookkeeping as `opt_args`;
+neither is read, because either would give the updater evidence the method says it does not have.
+
+### 13A.4 Provenance for two repositories
+
+An offline run pins one repository. An online run is two — the updater here, the agent loop in the
+host — and a result naming only one cannot be rebuilt. Both are recorded with remote, branch, commit
+and cleanliness, and both must be clean before a model is reached.
+
+The online path runs in the host's interpreter, whose OpenAI package is not the version the offline
+runs pin. The updater's client is still built by `adapter.from_environment`, so its endpoint, model,
+timeout and `max_retries=0` are unchanged; the version is **recorded rather than enforced**, because
+the honest thing is to write down what ran. The host's own client is not used: it builds with the
+SDK's default retries, which would compose with §12.14 into requests no record would show.
+
+### 13A.5 Continuations, and what they prove
+
+A committed boundary is followed by a continuation record holding the exact message list sent to the
+downstream model, its response, the executed code and the resulting observation. The claim that
+matters is checkable rather than asserted: the handover is either in those messages or it is not,
+and a later boundary's `delta_h` either contains the action they produced or it does not. A frozen
+replay can satisfy neither.
+
+A boundary prepared but not committed leaves a record under a pending directory that ordinary
+discovery skips, and a run that claims to have completed while one is still there is refused when
+read back — that is exactly the shape of a run that stopped between preparing and committing.
 
 ---
 
