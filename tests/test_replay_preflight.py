@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 
 from future_graph.adapter import (
-    API_KEY_VAR, BASE_URL, BASE_URL_VAR, MODEL, MODEL_VAR, Adapter, AdapterError, from_environment,
+    API_KEY_VAR, BASE_URL, BASE_URL_VAR, MODEL, MODEL_VAR, Adapter, AdapterError,
+    EmptyModelCompletion, from_environment,
 )
 from future_graph.artifacts import ModelCall, RegenerationRecord, prompt_sha
 from future_graph.episodes import InputError, canonical_inputs_sha256, load
@@ -675,12 +676,30 @@ def test_a_provider_that_answers_in_the_wrong_shape_is_an_adapter_failure(respon
         adapter(ModelCall(system="S", user="U"))
 
 
-def test_an_empty_answer_is_a_model_answer_and_not_an_adapter_failure():
-    adapter = Adapter(client=FakeClient(Response("")), model=MODEL)
-    assert adapter(ModelCall(system="S", user="U")) == ""
+@pytest.mark.parametrize("answer", ["", "   ", "\n\n"])
+def test_an_empty_answer_is_a_call_failure_and_not_a_refused_graph(answer):
+    """Reversed deliberately, on evidence.
+
+    A boundary came back with zero characters and was recorded as a graph that failed to parse. It
+    is not one: nothing was generated, so there is no candidate to have been wrong about, and
+    counting it as a parse failure puts provider hiccups into the protocol failure rate.
+    """
+    adapter = Adapter(client=FakeClient(Response(answer)), model=MODEL)
+    with pytest.raises(EmptyModelCompletion, match="empty completion"):
+        adapter(ModelCall(system="S", user="U"))
 
 
-def test_an_empty_answer_becomes_a_parse_rejection(tmp_path):
+def test_the_empty_answer_guard_lives_in_the_adapter():
+    """So a caller that supplies its own model callable is not protected by it.
+
+    `replay` with a stub returning empty text still reaches the parser and is recorded as a
+    rejection, which is correct: the stub is the model in that arrangement, and the guard is about
+    what a provider returned, not about what any callable may return.
+    """
+    assert issubclass(EmptyModelCompletion, AdapterError)
+
+
+def test_a_stub_returning_nothing_still_reaches_the_parser(tmp_path):
     source, manifest, repo = build_fixture(tmp_path)
     inputs = load(source, manifest, repo)
     run_dir = tmp_path / "run"

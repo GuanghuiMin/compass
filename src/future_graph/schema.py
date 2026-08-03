@@ -40,6 +40,9 @@ class Relation(str, Enum):
     PRECEDES = "precedes"     # computation -> computation
     REQUIRES = "requires"     # information -> computation
     PRODUCES = "produces"     # computation -> information
+    REFINES = "refines"       # computation -> computation, parent -> child
+    INTERFACE_INPUT = "interface_input"      # information -> coarse computation
+    INTERFACE_OUTPUT = "interface_output"    # coarse computation -> information
 
 
 class EntityType(str, Enum):
@@ -327,6 +330,9 @@ ENDPOINTS: dict[Relation, tuple[EntityType, EntityType]] = {
     Relation.PRECEDES: (EntityType.COMPUTATION, EntityType.COMPUTATION),
     Relation.REQUIRES: (EntityType.INFORMATION, EntityType.COMPUTATION),
     Relation.PRODUCES: (EntityType.COMPUTATION, EntityType.INFORMATION),
+    Relation.REFINES: (EntityType.COMPUTATION, EntityType.COMPUTATION),
+    Relation.INTERFACE_INPUT: (EntityType.INFORMATION, EntityType.COMPUTATION),
+    Relation.INTERFACE_OUTPUT: (EntityType.COMPUTATION, EntityType.INFORMATION),
 }
 
 

@@ -223,3 +223,141 @@ def test_no_two_payload_shapes_render_alike():
               MappingPayload((("a", 1),)), MappingPayload(())]
     rendered = [_rendered_payload(p) for p in shapes]
     assert len(set(rendered)) == len(shapes)
+
+
+# --------------------------------------------------------------------------- refinement
+
+def refined():
+    """c1 is being worked on and is expanded; c4 is refined but distant, so it stays shut.
+
+    c2 can run, c3 waits for it, and c4's child c5 is not shown at all. i2 crosses out of c1 and
+    into c4, so both boundaries declare it and it is one node throughout.
+    """
+    return build(
+        nodes=[comp("c1", "Gather the records that satisfy the request"),
+               comp("c2", "Retrieve the first page", operation="example.list_records",
+                    arguments={"page": 1}),
+               comp("c3", "Continue until no page remains"),
+               comp("c4", "Report the outcome"),
+               comp("c5", "Draft the summary line"),
+               info("i1", "The confirmed listing interface", kind=InformationKind.CONTRACT,
+                    payload=ContractPayload("example.list_records", ("page",))),
+               info("i2", "The gathered records", available=False,
+                    kind=InformationKind.RESULT),
+               info("i3", "The house style for summaries")],
+        edges=[("c1", Relation.REFINES, "c2"), ("c1", Relation.REFINES, "c3"),
+               ("c4", Relation.REFINES, "c5"),
+               ("i1", Relation.INTERFACE_INPUT, "c1"),
+               ("c1", Relation.INTERFACE_OUTPUT, "i2"),
+               ("i1", Relation.REQUIRES, "c2"), ("c3", Relation.PRODUCES, "i2"),
+               ("i2", Relation.INTERFACE_INPUT, "c4"), ("i2", Relation.REQUIRES, "c5"),
+               ("i3", Relation.INTERFACE_INPUT, "c4"), ("i3", Relation.REQUIRES, "c5"),
+               ("c2", Relation.PRECEDES, "c3"), ("c1", Relation.PRECEDES, "c4")])
+
+
+def test_the_refined_fixture_is_a_graph_the_validator_accepts():
+    """A rendering fixture that could never be committed would prove nothing about the handover."""
+    from future_graph.validation import validate
+    assert validate(refined()) == ()
+
+
+def test_a_graph_without_refinement_renders_the_way_it_always_has():
+    text = render(episode())
+    assert "CURRENT COMPUTATIONS" in text
+    assert "REFINED PLAN OVERVIEW" not in text
+    assert "ACTIVE WORK" not in text
+
+
+def test_the_refined_plan_comes_first_and_shows_only_the_interface():
+    text = render(refined())
+    plan = text.split("ACTIVE WORK")[0]
+    assert text.index("REFINED PLAN OVERVIEW") == 0
+    assert "[c1] Gather the records that satisfy the request" in plan
+    assert "[c4] Report the outcome" in plan
+    assert "Interface in:" in plan and "Interface out:" in plan
+    assert "example.list_records" in plan          # the contract payload, named once
+    assert "Operation:" not in plan                # no execution detail at the refined level
+
+
+def test_active_work_shows_the_executable_leaf_in_full():
+    text = render(refined())
+    active = text.split("ACTIVE WORK")[1].split("LATER COMPUTATIONS")[0]
+    assert "[c2] Retrieve the first page" in active
+    assert "Operation: example.list_records" in active
+    assert "page = 1" in active
+
+
+def test_active_work_holds_an_executable_abstract_leaf_that_was_never_refined():
+    """Which is why the heading is ACTIVE WORK: what lands here need not be a refinement path."""
+    g = build(nodes=[comp("c1", "Gather the records"), comp("c2", "Retrieve the first page"),
+                     comp("c3", "Send the acknowledgement")],
+              edges=[("c1", Relation.REFINES, "c2")])
+    text = render(g)
+    active = text.split("ACTIVE WORK")[1]
+    assert "[c3] Send the acknowledgement" in active
+    assert g.is_leaf("c3") and not g.refinement_parents_of("c3")
+
+
+def test_a_distant_refined_subtree_is_not_expanded():
+    """c4 is refined, but nothing under it can run, so its child stays out of the handover."""
+    text = render(refined())
+    assert "[c5]" not in text
+    assert "Draft the summary line" not in text
+
+
+def test_a_blocked_sibling_of_the_frontier_is_shown_as_later_work():
+    text = render(refined())
+    later = text.split("LATER COMPUTATIONS")[1]
+    assert "[c3] Continue until no page remains" in later
+
+
+def test_information_only_a_hidden_subtree_touches_is_not_rendered():
+    text = render(refined())
+    assert "house style" in text          # c4 declares it as an interface input
+    assert text.count("house style") == 1
+
+
+def test_every_visible_information_node_is_defined_exactly_once():
+    text = render(refined())
+    definitions, _ = _mentions(text)
+    assert len(definitions) == len(set(definitions))
+    assert sorted(definitions) == ["i1", "i2", "i3"]
+
+
+def test_no_information_is_referenced_before_it_is_defined_under_refinement():
+    seen = set()
+    for line in render(refined()).splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("- [i"):
+            continue
+        inside = stripped[3:stripped.index("]")]
+        if "|" in inside:
+            seen.add(inside.split("|")[0])
+        else:
+            assert inside in seen, f"{inside} is referred to before it is defined"
+
+
+def test_a_coarse_computation_names_its_children():
+    assert "Refined into: c2, c3" in render(refined())
+
+
+def test_refined_rendering_is_deterministic():
+    assert render(refined()) == render(refined())
+
+
+def test_a_refined_computation_shows_what_governs_it():
+    """Obligation-level knowledge reaches the handover, or the graph holds it and nobody sees it."""
+    g = build(nodes=[comp("c1", "Register every seedling"),
+                     comp("c2", "Open one entry", operation="example.open_entry"),
+                     info("i1", "The batch route was retired and no batch interface exists",
+                          kind=InformationKind.FAILURE_CONSEQUENCE),
+                     info("i2", "The delivery to register")],
+              edges=[("c1", Relation.REFINES, "c2"),
+                     ("i1", Relation.REQUIRES, "c1"),
+                     ("i2", Relation.INTERFACE_INPUT, "c1"), ("i2", Relation.REQUIRES, "c2")])
+    text = render(g)
+    plan = text.split("ACTIVE WORK")[0]
+    assert "Needs:" in plan
+    assert "The batch route was retired" in plan
+    assert plan.index("Needs:") < plan.index("Interface in:")
+    assert "[i1|failure_consequence]" in plan
