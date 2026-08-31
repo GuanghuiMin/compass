@@ -1,0 +1,24 @@
+Task: {{ task }}
+
+Current requirement graph (statuses are verified against evidence; [>] marks nodes executable now):
+{{ tree }}
+
+NEW trajectory turns since the last update:
+{{ history }}
+
+Propose local updates to the requirement graph as JSON only:
+
+{"ops": [
+ {"op": "UPDATE_STATUS", "id": "r2", "status": "DONE|PARTIAL|IN_PROGRESS|BLOCKED", "evidence": ["s12", "s14"], "count": <objects covered so far, when the node has an expected count>},
+ {"op": "REFINE", "parent": "r3", "ordered": false, "children": [{"text": "<concrete sub-item discovered from the observations>", "expect": <int?>}, ...]},
+ {"op": "PROPOSE_NEXT", "id": "r3.2", "action": "<the next concrete call for this node>"},
+ {"op": "DECLARE_NEED", "id": "r3.2", "need": {"api": "app.api_name", "fields": ["field", ...], "desc": "<what value this node still requires>"}}
+]}
+
+Rules:
+- Only local updates; never restate the whole graph. Ops on unknown ids or DONE nodes are rejected.
+- "evidence" must cite step ids (sN) from the turns above whose observation confirms the status; a DONE/PARTIAL without valid evidence is rejected.
+- REFINE only top-level nodes, into 2-4 coarse sub-goals (e.g. 'find the entities', 'apply the change to all of them', 'verify'). NEVER one child per entity: when a node covers N discovered objects, set its expect/count instead.
+- A DONE on a clause that asks for an action must cite a step whose call performed that action (not just a lookup).
+- DECLARE_NEED for information the node's next action requires but which is not yet at hand.
+- [] is a valid answer when nothing changed.

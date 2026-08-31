@@ -1,0 +1,253 @@
+{
+ "task_id": "1-9/5",
+ "env": "officebench",
+ "method": "full",
+ "agent_model": "deepseek-v4-flash:0731",
+ "budget": 2048,
+ "max_steps": 30,
+ "obs_limit": 10000,
+ "instruction": "calculate item average weight, write in the bottom row in shopping list excel file with header 'Average'",
+ "steps": [
+  {
+   "step": 1,
+   "code": "{\"app\": \"system\", \"action\": \"switch_app\", \"target_app\": \"shell\"}",
+   "raw_response": "\n<action>{\"app\": \"system\", \"action\": \"switch_app\", \"target_app\": \"shell\"}</action>",
+   "observation": "Successfully switched to app: shell. Available actions:\n- command",
+   "is_error": false,
+   "sigs": [
+    "system.switch_app(target_app=\"shell\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 700,
+   "compressed": false,
+   "current_app": "shell"
+  },
+  {
+   "step": 2,
+   "code": "{\"app\": \"shell\", \"action\": \"command\", \"command\": \"ls -la tasks/1-9/testbed/data\"}",
+   "raw_response": "<action>{\"app\": \"shell\", \"action\": \"command\", \"command\": \"ls -la tasks/1-9/testbed/data\"}</action>",
+   "observation": "total 44\ndrwxrwxrwx 1 root root 4096 Aug 25 14:36 .\ndrwxrwxrwx 1 root root 4096 Aug 25 14:36 ..\n-rwxrwxrwx 1 root root 5190 Aug 25 14:36 class_member.xlsx\n-rwxrwxrwx 1 root root 8509 Aug 25 14:36 company_budget.xlsx\n-rwxrwxrwx 1 root root 4965 Aug 25 14:36 salary.xlsx\n-rwxrwxrwx 1 root root 6813 Aug 25 14:36 score.xlsx\n-rwxrwxrwx 1 root root 4962 Aug 25 14:36 shopping_list.xlsx",
+   "is_error": false,
+   "sigs": [
+    "shell.command(command=\"ls-latasks/1-9/testbed/data\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 959,
+   "compressed": false,
+   "current_app": "shell"
+  },
+  {
+   "step": 3,
+   "code": "{\"app\": \"system\", \"action\": \"switch_app\", \"target_app\": \"excel\"}",
+   "raw_response": "{\"app\": \"system\", \"action\": \"switch_app\", \"target_app\": \"excel\"}",
+   "observation": "Successfully switched to app: excel. Available actions:\n- read_file\n- set_cell\n- delete_cell\n- create_new_file\n- convert_to_pdf",
+   "is_error": false,
+   "sigs": [
+    "system.switch_app(target_app=\"excel\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 1377,
+   "compressed": false,
+   "current_app": "excel"
+  },
+  {
+   "step": 4,
+   "code": "{\"app\": \"excel\", \"action\": \"read_file\", \"file_path\": \"tasks/1-9/testbed/data/shopping_list.xlsx\"}",
+   "raw_response": "<action>{\"app\": \"excel\", \"action\": \"read_file\", \"file_path\": \"tasks/1-9/testbed/data/shopping_list.xlsx\"}</action>",
+   "observation": "The following is the table from the excel file:\n(1, 1): Name\t(1, 2): amount\t\n(2, 1): apple\t(2, 2): 2\t\n(3, 1): cabbage\t(3, 2): 2\t\n(4, 1): onion\t(4, 2): 2",
+   "is_error": false,
+   "sigs": [
+    "excel.read_file(file_path=\"tasks/1-9/testbed/data/shopping_list.xlsx\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 1883,
+   "compressed": false,
+   "current_app": "excel"
+  },
+  {
+   "step": 5,
+   "code": "{\"app\": \"shell\", \"action\": \"command\", \"command\": \"cd tasks/1-9/testbed/data && python3 -c \\\"import openpyxl; wb=openpyxl.load_workbook('shopping_list.xlsx'); ws=wb.active; print(ws.dimensions); print(ws.max_row, ws.max_column); [print(cell.coordinate, cell.value) for row in ws.iter_rows() for cell in row if cell.value is not None]\\\"\"}",
+   "raw_response": "{\"app\": \"shell\", \"action\": \"command\", \"command\": \"cd tasks/1-9/testbed/data && python3 -c \\\"import openpyxl; wb=openpyxl.load_workbook('shopping_list.xlsx'); ws=wb.active; print(ws.dimensions); print(ws.max_row, ws.max_column); [print(cell.coordinate, cell.value) for row in ws.iter_rows() for cell in row if cell.value is not None]\\\"\"}",
+   "observation": "Command failed with exit code 2: cd /tasks/1-9/testbed/data && python3 -c \"import openpyxl; wb=openpyxl.load_workbook('shopping_list.xlsx'); ws=wb.active; print(ws.dimensions); print(ws.max_row, ws.max_column); [print(cell.coordinate, cell.value) for row in ws.iter_rows() for cell in row if cell.value is not None]\". The error was [/bin/sh: 1: Syntax error: \"(\" unexpected\n].",
+   "is_error": true,
+   "sigs": [
+    "shell.command(command=\"cdtasks/1-9/testbed/data&&python3-c\\\"importopenpyxl;wb=openpyxl.load_workbook('shopping_list.xlsx');ws=wb.active;print(ws.dimensions);print(ws.max_row,ws.max_column);[print(cell.coordinate,cell.value)forrowinws.iter_rows()forcellinrowifcell.valueisnotNone]\\\"\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 2445,
+   "compressed": false,
+   "current_app": "excel"
+  },
+  {
+   "step": 6,
+   "code": "{\"app\": \"shell\", \"action\": \"command\", \"command\": \"cd tasks/1-9/testbed/data && python3 -c 'import openpyxl; wb=openpyxl.load_workbook(\\\"shopping_list.xlsx\\\"); ws=wb.active; print(ws.max_row, ws.max_column); [print(cell.coordinate, repr(cell.value)) for row in ws.iter_rows() for cell in row]'\" }",
+   "raw_response": "{\"app\": \"shell\", \"action\": \"command\", \"command\": \"cd tasks/1-9/testbed/data && python3 -c 'import openpyxl; wb=openpyxl.load_workbook(\\\"shopping_list.xlsx\\\"); ws=wb.active; print(ws.max_row, ws.max_column); [print(cell.coordinate, repr(cell.value)) for row in ws.iter_rows() for cell in row]'\" }",
+   "observation": "Command failed with exit code 1: cd /tasks/1-9/testbed/data && python3 -c 'import openpyxl; wb=openpyxl.load_workbook(\"shopping_list.xlsx\"); ws=wb.active; print(ws.max_row, ws.max_column); [print(cell.coordinate, repr(cell.value)) for row in ws.iter_rows() for cell in row]'. The error was [/bin/bash: line 1: cd: /tasks/1-9/testbed/data: No such file or directory\n].",
+   "is_error": true,
+   "sigs": [
+    "shell.command(command=\"cdtasks/1-9/testbed/data&&python3-c'importopenpyxl;wb=openpyxl.load_workbook(\\\"shopping_list.xlsx\\\");ws=wb.active;print(ws.max_row,ws.max_column);[print(cell.coordinate,repr(cell.value))forrowinws.iter_rows()forcellinrow]'\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 3096,
+   "compressed": false,
+   "current_app": "excel"
+  },
+  {
+   "step": 7,
+   "code": "{\"app\": \"shell\", \"action\": \"command\", \"command\": \"python3 -c 'import openpyxl; wb=openpyxl.load_workbook(\\\"tasks/1-9/testbed/data/shopping_list.xlsx\\\"); ws=wb.active; print(ws.max_row, ws.max_column); [print(cell.coordinate, repr(cell.value)) for row in ws.iter_rows() for cell in row]'\"}",
+   "raw_response": "{\"app\": \"shell\", \"action\": \"command\", \"command\": \"python3 -c 'import openpyxl; wb=openpyxl.load_workbook(\\\"tasks/1-9/testbed/data/shopping_list.xlsx\\\"); ws=wb.active; print(ws.max_row, ws.max_column); [print(cell.coordinate, repr(cell.value)) for row in ws.iter_rows() for cell in row]'\"}",
+   "observation": "Command failed with exit code 1: python3 -c 'import openpyxl; wb=openpyxl.load_workbook(\"tasks/1-9/testbed/data/shopping_list.xlsx\"); ws=wb.active; print(ws.max_row, ws.max_column); [print(cell.coordinate, repr(cell.value)) for row in ws.iter_rows() for cell in row]'. The error was [Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\nNameError: name 'tasks' is not defined\n].",
+   "is_error": true,
+   "sigs": [
+    "shell.command(command=\"python3-c'importopenpyxl;wb=openpyxl.load_workbook(\\\"tasks/1-9/testbed/data/shopping_list.xlsx\\\");ws=wb.active;print(ws.max_row,ws.max_column);[print(cell.coordinate,repr(cell.value))forrowinws.iter_rows()forcellinrow]'\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 3743,
+   "compressed": false,
+   "current_app": "excel"
+  },
+  {
+   "step": 8,
+   "code": "{\"app\": \"shell\", \"action\": \"command\", \"command\": \"echo 'import openpyxl\\nwb=openpyxl.load_workbook(\\\"tasks/1-9/testbed/data/shopping_list.xlsx\\\")\\nws=wb.active\\nprint(\\\"max_row\\\", ws.max_row, \\\"max_col\\\", ws.max_column)\\nfor row in ws.iter_rows():\\n    for cell in row:\\n        print(cell.coordinate, repr(cell.value))\\n' > /tmp/inspect.py && python3 /tmp/inspect.py\"}",
+   "raw_response": "{\"app\": \"shell\", \"action\": \"command\", \"command\": \"echo 'import openpyxl\\nwb=openpyxl.load_workbook(\\\"tasks/1-9/testbed/data/shopping_list.xlsx\\\")\\nws=wb.active\\nprint(\\\"max_row\\\", ws.max_row, \\\"max_col\\\", ws.max_column)\\nfor row in ws.iter_rows():\\n    for cell in row:\\n        print(cell.coordinate, repr(cell.value))\\n' > /tmp/inspect.py && python3 /tmp/inspect.py\"}",
+   "observation": "Command failed with exit code 1: echo 'import openpyxl\nwb=openpyxl.load_workbook(\"tasks/1-9/testbed/data/shopping_list.xlsx\")\nws=wb.active\nprint(\"max_row\", ws.max_row, \"max_col\", ws.max_column)\nfor row in ws.iter_rows():\n    for cell in row:\n        print(cell.coordinate, repr(cell.value))\n' > /tmp/inspect.py && python3 /tmp/inspect.py. The error was [Traceback (most recent call last):\n  File \"/tmp/inspect.py\", line 1, in <module>\n    import openpyxl\n  File \"/root/ob_venv/lib/python3.11/site-packages/openpyxl/__init__.py\", line 5, in <module>\n    from openpyxl.compat.numbers import NUMPY\n  File \"/root/ob_venv/lib/python3.11/site-packages/openpyxl/compat/__init__.py\", line 3, in <module>\n    from .numbers import NUMERIC_TYPES\n  File \"/root/ob_venv/lib/python3.11/site-packages/openpyxl/compat/numbers.py\", line 9, in <module>\n    import numpy\n  File \"/root/ob_venv/lib/python3.11/site-packages/numpy/__init__.py\", line 159, in <module>\n    from . import ma\n  File \"/root/ob_venv/lib/python3.11/site-packages/numpy/ma/__init__.py\", line 42, in <module>\n    from . import core\n  File \"/root/ob_venv/lib/python3.11/site-packages/numpy/ma/core.py\", line 24, in <module>\n    import inspect\n  File \"/tmp/inspect.py\", line 2, in <module>\n    wb=openpyxl.load_workbook(tasks/1-9/testbed/data/shopping_list.xlsx)\n       ^^^^^^^^^^^^^^^^^^^^^^\nAttributeError: partially initialized module 'openpyxl' has no attribute 'load_workbook' (most likely due to a circular import)\n].",
+   "is_error": true,
+   "sigs": [
+    "shell.command(command=\"echo'importopenpyxl\\nwb=openpyxl.load_workbook(\\\"tasks/1-9/testbed/data/shopping_list.xlsx\\\")\\nws=wb.active\\nprint(\\\"max_row\\\",ws.max_row,\\\"max_col\\\",ws.max_column)\\nforrowinws.iter_rows():\\nforcellinrow:\\nprint(cell.coordinate,repr(cell.value))\\n'>/tmp/inspect.py&&python3/tmp/inspect.py\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 4393,
+   "compressed": false,
+   "current_app": "excel"
+  },
+  {
+   "step": 9,
+   "code": "{\"app\": \"shell\", \"action\": \"command\", \"command\": \"echo 'import openpyxl\\nwb=openpyxl.load_workbook(\\\"tasks/1-9/testbed/data/shopping_list.xlsx\\\")\\nws=wb.active\\nprint(\\\"max_row\\\", ws.max_row, \\\"max_col\\\", ws.max_column)\\nfor row in ws.iter_rows():\\n    for cell in row:\\n        print(cell.coordinate, repr(cell.value))\\n' > /tmp/check_excel.py && python3 /tmp/check_excel.py\"}",
+   "raw_response": "{\"app\": \"shell\", \"action\": \"command\", \"command\": \"echo 'import openpyxl\\nwb=openpyxl.load_workbook(\\\"tasks/1-9/testbed/data/shopping_list.xlsx\\\")\\nws=wb.active\\nprint(\\\"max_row\\\", ws.max_row, \\\"max_col\\\", ws.max_column)\\nfor row in ws.iter_rows():\\n    for cell in row:\\n        print(cell.coordinate, repr(cell.value))\\n' > /tmp/check_excel.py && python3 /tmp/check_excel.py\"}",
+   "observation": "Command failed with exit code 1: echo 'import openpyxl\nwb=openpyxl.load_workbook(\"tasks/1-9/testbed/data/shopping_list.xlsx\")\nws=wb.active\nprint(\"max_row\", ws.max_row, \"max_col\", ws.max_column)\nfor row in ws.iter_rows():\n    for cell in row:\n        print(cell.coordinate, repr(cell.value))\n' > /tmp/check_excel.py && python3 /tmp/check_excel.py. The error was [Traceback (most recent call last):\n  File \"/tmp/check_excel.py\", line 1, in <module>\n    import openpyxl\n  File \"/root/ob_venv/lib/python3.11/site-packages/openpyxl/__init__.py\", line 5, in <module>\n    from openpyxl.compat.numbers import NUMPY\n  File \"/root/ob_venv/lib/python3.11/site-packages/openpyxl/compat/__init__.py\", line 3, in <module>\n    from .numbers import NUMERIC_TYPES\n  File \"/root/ob_venv/lib/python3.11/site-packages/openpyxl/compat/numbers.py\", line 9, in <module>\n    import numpy\n  File \"/root/ob_venv/lib/python3.11/site-packages/numpy/__init__.py\", line 159, in <module>\n    from . import ma\n  File \"/root/ob_venv/lib/python3.11/site-packages/numpy/ma/__init__.py\", line 42, in <module>\n    from . import core\n  File \"/root/ob_venv/lib/python3.11/site-packages/numpy/ma/core.py\", line 24, in <module>\n    import inspect\n  File \"/tmp/inspect.py\", line 2, in <module>\n    wb=openpyxl.load_workbook(tasks/1-9/testbed/data/shopping_list.xlsx)\n       ^^^^^^^^^^^^^^^^^^^^^^\nAttributeError: partially initialized module 'openpyxl' has no attribute 'load_workbook' (most likely due to a circular import)\n].",
+   "is_error": true,
+   "sigs": [
+    "shell.command(command=\"echo'importopenpyxl\\nwb=openpyxl.load_workbook(\\\"tasks/1-9/testbed/data/shopping_list.xlsx\\\")\\nws=wb.active\\nprint(\\\"max_row\\\",ws.max_row,\\\"max_col\\\",ws.max_column)\\nforrowinws.iter_rows():\\nforcellinrow:\\nprint(cell.coordinate,repr(cell.value))\\n'>/tmp/check_excel.py&&python3/tmp/check_excel.py\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 5399,
+   "compressed": false,
+   "current_app": "excel"
+  },
+  {
+   "step": 10,
+   "code": "{\"app\": \"shell\", \"action\": \"command\", \"command\": \"rm -f /tmp/inspect.py /tmp/check_excel.py && echo 'import openpyxl\\nwb=openpyxl.load_workbook(\\\"tasks/1-9/testbed/data/shopping_list.xlsx\\\")\\nws=wb.active\\nprint(\\\"max_row\\\", ws.max_row, \\\"max_col\\\", ws.max_column)\\nfor row in ws.iter_rows():\\n    for cell in row:\\n        print(cell.coordinate, repr(cell.value))\\n' > /tmp/check2.py && python3 /tmp/check2.py\"}",
+   "raw_response": "{\"app\": \"shell\", \"action\": \"command\", \"command\": \"rm -f /tmp/inspect.py /tmp/check_excel.py && echo 'import openpyxl\\nwb=openpyxl.load_workbook(\\\"tasks/1-9/testbed/data/shopping_list.xlsx\\\")\\nws=wb.active\\nprint(\\\"max_row\\\", ws.max_row, \\\"max_col\\\", ws.max_column)\\nfor row in ws.iter_rows():\\n    for cell in row:\\n        print(cell.coordinate, repr(cell.value))\\n' > /tmp/check2.py && python3 /tmp/check2.py\"}",
+   "observation": "Command failed with exit code 1: rm -f /tmp/inspect.py /tmp/check_excel.py && echo 'import openpyxl\nwb=openpyxl.load_workbook(\"tasks/1-9/testbed/data/shopping_list.xlsx\")\nws=wb.active\nprint(\"max_row\", ws.max_row, \"max_col\", ws.max_column)\nfor row in ws.iter_rows():\n    for cell in row:\n        print(cell.coordinate, repr(cell.value))\n' > /tmp/check2.py && python3 /tmp/check2.py. The error was [Traceback (most recent call last):\n  File \"/tmp/check2.py\", line 2, in <module>\n    wb=openpyxl.load_workbook(tasks/1-9/testbed/data/shopping_list.xlsx)\n                              ^^^^^\nNameError: name 'tasks' is not defined\n].",
+   "is_error": true,
+   "sigs": [
+    "shell.command(command=\"rm-f/tmp/inspect.py/tmp/check_excel.py&&echo'importopenpyxl\\nwb=openpyxl.load_workbook(\\\"tasks/1-9/testbed/data/shopping_list.xlsx\\\")\\nws=wb.active\\nprint(\\\"max_row\\\",ws.max_row,\\\"max_col\\\",ws.max_column)\\nforrowinws.iter_rows():\\nforcellinrow:\\nprint(cell.coordinate,repr(cell.value))\\n'>/tmp/check2.py&&python3/tmp/check2.py\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 6405,
+   "compressed": false,
+   "current_app": "excel"
+  },
+  {
+   "step": 11,
+   "code": "{\"app\": \"excel\", \"action\": \"set_cell\", \"file_path\": \"tasks/1-9/testbed/data/shopping_list.xlsx\", \"row_idx\": 5, \"column_idx\": 1, \"text\": \"Average\"}",
+   "raw_response": "{\"app\": \"excel\", \"action\": \"set_cell\", \"file_path\": \"tasks/1-9/testbed/data/shopping_list.xlsx\", \"row_idx\": 5, \"column_idx\": 1, \"text\": \"Average\"}",
+   "observation": "Successfully write text to tasks/1-9/testbed/data/shopping_list.xlsx\nThe current content of the file after the set action is:\n(1, 1): Name\t(1, 2): amount\t\n(2, 1): apple\t(2, 2): 2\t\n(3, 1): cabbage\t(3, 2): 2\t\n(4, 1): onion\t(4, 2): 2\t\n(5, 1): Average\t(5, 2): [Empty Cell]",
+   "is_error": false,
+   "sigs": [
+    "excel.set_cell(column_idx=1,file_path=\"tasks/1-9/testbed/data/shopping_list.xlsx\",row_idx=5,text=\"Average\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 7160,
+   "compressed": false,
+   "current_app": "excel"
+  },
+  {
+   "step": 12,
+   "code": "{\"app\": \"system\", \"action\": \"switch_app\", \"target_app\": \"calculator\"}",
+   "raw_response": "{\"app\": \"system\", \"action\": \"switch_app\", \"target_app\": \"calculator\"}",
+   "observation": "Successfully switched to app: calculator. Available actions:\n- calculate",
+   "is_error": false,
+   "sigs": [
+    "system.switch_app(target_app=\"calculator\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 7779,
+   "compressed": false,
+   "current_app": "calculator"
+  },
+  {
+   "step": 13,
+   "code": "{\"app\": \"calculator\", \"action\": \"calculate\", \"expression\": \"(2+2+2)/3\"}",
+   "raw_response": "{\"app\": \"calculator\", \"action\": \"calculate\", \"expression\": \"(2+2+2)/3\"}",
+   "observation": "2.0",
+   "is_error": false,
+   "sigs": [
+    "calculator.calculate(expression=\"(2+2+2)/3\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 8048,
+   "compressed": false,
+   "current_app": "calculator"
+  },
+  {
+   "step": 14,
+   "code": "{\"app\": \"system\", \"action\": \"switch_app\", \"target_app\": \"excel\"}",
+   "raw_response": "{\"app\": \"system\", \"action\": \"switch_app\", \"target_app\": \"excel\"}",
+   "observation": "Successfully switched to app: excel. Available actions:\n- read_file\n- set_cell\n- delete_cell\n- create_new_file\n- convert_to_pdf",
+   "is_error": false,
+   "sigs": [
+    "system.switch_app(target_app=\"excel\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 8312,
+   "compressed": false,
+   "current_app": "excel"
+  },
+  {
+   "step": 15,
+   "code": "{\"app\": \"excel\", \"action\": \"set_cell\", \"file_path\": \"tasks/1-9/testbed/data/shopping_list.xlsx\", \"row_idx\": 5, \"column_idx\": 2, \"text\": \"2.0\"}",
+   "raw_response": "{\"app\": \"excel\", \"action\": \"set_cell\", \"file_path\": \"tasks/1-9/testbed/data/shopping_list.xlsx\", \"row_idx\": 5, \"column_idx\": 2, \"text\": \"2.0\"}",
+   "observation": "Successfully write text to tasks/1-9/testbed/data/shopping_list.xlsx\nThe current content of the file after the set action is:\n(1, 1): Name\t(1, 2): amount\t\n(2, 1): apple\t(2, 2): 2\t\n(3, 1): cabbage\t(3, 2): 2\t\n(4, 1): onion\t(4, 2): 2\t\n(5, 1): Average\t(5, 2): 2",
+   "is_error": false,
+   "sigs": [
+    "excel.set_cell(column_idx=2,file_path=\"tasks/1-9/testbed/data/shopping_list.xlsx\",row_idx=5,text=\"2.0\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 8818,
+   "compressed": false,
+   "current_app": "excel"
+  },
+  {
+   "step": 16,
+   "code": "{\"app\": \"system\", \"action\": \"finish_task\", \"answer\": \"None\"}",
+   "raw_response": "<action>{\"app\": \"system\", \"action\": \"finish_task\", \"answer\": \"None\"}</action>",
+   "observation": "Task finished",
+   "is_error": false,
+   "sigs": [
+    "system.finish_task(answer=\"None\")"
+   ],
+   "refetch": false,
+   "prompt_tokens": 9438,
+   "compressed": false,
+   "current_app": "excel"
+  }
+ ],
+ "boundaries": [],
+ "termination_reason": "task_completed",
+ "error": null,
+ "success": true,
+ "score": 1.0,
+ "n_steps": 16,
+ "n_blocked": 6,
+ "n_refetch": 0,
+ "peak_prompt_tokens": 9438,
+ "agent_usage": {
+  "calls": 16,
+  "prompt_tokens": 85502,
+  "completion_tokens": 3644,
+  "wall_seconds": 43.9
+ },
+ "compressor_usage": null,
+ "wall_seconds": 110.7
+}
