@@ -125,6 +125,64 @@ class StateGraph:
         return tuple(sorted((v for _, v, d in self._g.out_edges(computation_id, data=True)
                              if d["relation"] is Relation.PRECEDES), key=_safe_order))
 
+    # ------------------------------------------------------------------ refinement
+    # Every accessor below is read off the edges on demand. None of them is cached, and none of
+    # them assumes the candidate is sound: validation runs on graphs that may have a refinement
+    # cycle or a child with two parents, so a traversal that trusted the hierarchy would hang on
+    # exactly the input it exists to report.
+
+    def refinement_children_of(self, computation_id: str) -> tuple[str, ...]:
+        """The computations this one is refined into."""
+        return tuple(sorted((v for _, v, d in self._g.out_edges(computation_id, data=True)
+                             if d["relation"] is Relation.REFINES), key=_safe_order))
+
+    def refinement_parents_of(self, computation_id: str) -> tuple[str, ...]:
+        """Plural, because an invalid candidate may give a computation two parents.
+
+        A singular accessor would have to pick one of them, and picking is how a graph that should
+        have been refused becomes a graph that was silently reinterpreted.
+        """
+        return tuple(sorted((u for u, _, d in self._g.in_edges(computation_id, data=True)
+                             if d["relation"] is Relation.REFINES), key=_safe_order))
+
+    def is_coarse(self, computation_id: str) -> bool:
+        """Refined into children, so the work is theirs and not its own."""
+        return bool(self.refinement_children_of(computation_id))
+
+    def is_leaf(self, computation_id: str) -> bool:
+        return not self.refinement_children_of(computation_id)
+
+    def refinement_ancestors_of(self, computation_id: str) -> tuple[str, ...]:
+        """Every computation above this one, cycles included and visited once each."""
+        return self._reach(computation_id, self.refinement_parents_of)
+
+    def refinement_descendants_of(self, computation_id: str) -> tuple[str, ...]:
+        return self._reach(computation_id, self.refinement_children_of)
+
+    def descendant_leaves_of(self, computation_id: str) -> tuple[str, ...]:
+        """The leaves below this one. Empty when a cycle leaves the subtree without any."""
+        return tuple(sorted((n for n in self.refinement_descendants_of(computation_id)
+                             if self.is_leaf(n)), key=_safe_order))
+
+    def _reach(self, start: str, step) -> tuple[str, ...]:
+        seen: set[str] = set()
+        pending = list(step(start))
+        while pending:
+            node_id = pending.pop()
+            if node_id in seen or node_id == start:
+                continue
+            seen.add(node_id)
+            pending.extend(step(node_id))
+        return tuple(sorted(seen, key=_safe_order))
+
+    def interface_inputs_of(self, computation_id: str) -> tuple[str, ...]:
+        return tuple(sorted((u for u, _, d in self._g.in_edges(computation_id, data=True)
+                             if d["relation"] is Relation.INTERFACE_INPUT), key=_safe_order))
+
+    def interface_outputs_of(self, computation_id: str) -> tuple[str, ...]:
+        return tuple(sorted((v for _, v, d in self._g.out_edges(computation_id, data=True)
+                             if d["relation"] is Relation.INTERFACE_OUTPUT), key=_safe_order))
+
     def remove(self, node_id: str) -> None:
         self._g.remove_node(node_id)
 

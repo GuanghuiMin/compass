@@ -374,9 +374,17 @@ def snapshot(**overrides):
     return base
 
 
+def test_every_relation_has_an_endpoint_pairing():
+    """Validation reads ENDPOINTS by relation, so a relation missing from it would raise a
+    KeyError inside the validator instead of reporting the fault it was asked about."""
+    from future_graph.schema import ENDPOINTS
+    assert set(ENDPOINTS) == set(Relation)
+
+
 def test_a_snapshot_with_an_unknown_relation_is_rejected():
+    # "supports", because "refines" is now one of the six the loader knows.
     with pytest.raises(SchemaError, match="unknown relation"):
-        StateGraph.from_snapshot(snapshot(edges=[{"source": "i1", "relation": "refines",
+        StateGraph.from_snapshot(snapshot(edges=[{"source": "i1", "relation": "supports",
                                                   "target": "c1"}]))
 
 

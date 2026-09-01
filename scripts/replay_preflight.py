@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -29,6 +30,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", help="one path component under artifacts/preflight/")
     parser.add_argument("--verify-only", action="store_true",
                         help="check every frozen input and stop, making no call")
+    parser.add_argument("--episode", action="append", dest="episodes",
+                        help="replay only this episode id, repeatable; default is all of them")
     args = parser.parse_args(argv)
 
     inputs = load(args.source_dir, MANIFEST_PATH)
@@ -40,6 +43,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.verify_only:
         return 0
+
+    if args.episodes:
+        # Every frozen input was verified above, whether or not it is replayed: narrowing the run
+        # must not narrow the integrity check. The run manifest takes its episode order and its
+        # boundary counts from what is left, so the artifact says which episodes this run covered
+        # and never implies the others were attempted.
+        known = {episode.id for episode in inputs.episodes}
+        unknown = [name for name in args.episodes if name not in known]
+        if unknown:
+            parser.error(f"no such episode: {', '.join(unknown)}")
+        inputs = replace(inputs, episodes=tuple(episode for episode in inputs.episodes
+                                                if episode.id in set(args.episodes)))
+        print(f"replaying {len(inputs.episodes)} of {len(known)} episodes, "
+              f"{inputs.boundary_count} boundaries: "
+              f"{', '.join(episode.id for episode in inputs.episodes)}")
+
     if not args.run_id:
         parser.error("--run-id is required unless --verify-only")
 

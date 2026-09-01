@@ -51,6 +51,44 @@ def test_produces_into_a_computation_is_rejected():
     assert "endpoint_type" in codes(g)
 
 
+def test_refines_between_a_computation_and_information_is_rejected():
+    g = build(nodes=[comp("c1"), info("i1")],
+              edges=[("c1", Relation.REFINES, "i1"), ("i1", Relation.REQUIRES, "c1")])
+    assert "endpoint_type" in codes(g)
+
+
+def test_an_interface_input_from_a_computation_is_rejected():
+    g = build(nodes=[comp("c1"), comp("c2", description="A child")],
+              edges=[("c1", Relation.REFINES, "c2"),
+                     ("c2", Relation.INTERFACE_INPUT, "c1")])
+    assert "endpoint_type" in codes(g)
+
+
+def test_an_interface_output_into_a_computation_is_rejected():
+    g = build(nodes=[comp("c1"), comp("c2", description="A child")],
+              edges=[("c1", Relation.REFINES, "c2"),
+                     ("c1", Relation.INTERFACE_OUTPUT, "c2")])
+    assert "endpoint_type" in codes(g)
+
+
+def test_a_refinement_cycle_is_rejected():
+    g = build(nodes=[comp("c1"), comp("c2", description="A child")],
+              edges=[("c1", Relation.REFINES, "c2"), ("c2", Relation.REFINES, "c1")])
+    assert "cycle" in codes(g)
+
+
+def test_a_computation_refining_itself_is_rejected():
+    g = build(nodes=[comp("c1")], edges=[("c1", Relation.REFINES, "c1")])
+    assert "cycle" in codes(g)
+
+
+def test_a_child_may_not_have_two_refinement_parents():
+    g = build(nodes=[comp("c1"), comp("c2", description="Another parent"),
+                     comp("c3", description="The child")],
+              edges=[("c1", Relation.REFINES, "c3"), ("c2", Relation.REFINES, "c3")])
+    assert "multiple_refinement_parents" in codes(g)
+
+
 # --------------------------------------------------------------------------- structure
 
 def test_a_cycle_is_rejected():

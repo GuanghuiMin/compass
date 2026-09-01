@@ -9,8 +9,13 @@ twice by default, so one call from here would be up to three requests on the wir
 tokens nobody counted and quietly turns one sample into the first of several.
 
 A provider that does not answer is not a model that answered badly. A missing choice, a missing
-message or a content that is not a string is an AdapterError; an empty string is what the model said
-and goes to the parser, where it becomes a parse rejection like any other unusable answer.
+message, a content that is not a string, and a content that is empty are all AdapterErrors.
+
+The last of those was not always so, and the change was made on evidence: a boundary came back with
+zero characters, and because an empty string was treated as the model's answer it was recorded as a
+graph that failed to parse. It is not one -- nothing was generated, so there is no candidate to have
+been wrong about. Left alone it would put provider hiccups into the protocol failure rate, which is
+the one number this system exists to measure honestly.
 """
 
 from __future__ import annotations
@@ -32,6 +37,14 @@ API_KEY_VAR = "TRACE_MINIMAX_API_KEY"
 
 class AdapterError(RuntimeError):
     """The provider did not answer in the shape this contract requires."""
+
+
+class EmptyModelCompletion(AdapterError):
+    """The provider answered with nothing at all.
+
+    Its own type, because it is the one failure that would otherwise be indistinguishable from a
+    model writing an unusable graph, and the two must never be counted together.
+    """
 
 
 @dataclass(frozen=True)
@@ -62,6 +75,9 @@ def _content(response: Any) -> str:
         raise AdapterError("the message carries no content")
     if not isinstance(content, str):
         raise AdapterError(f"the content is {type(content).__name__}, not text")
+    if not content.strip():
+        raise EmptyModelCompletion("the provider returned an empty completion, so there is no "
+                                   "candidate graph to judge")
     return content
 
 
